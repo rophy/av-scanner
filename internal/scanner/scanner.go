@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/rophy/av-scanner/internal/cache"
 	"github.com/rophy/av-scanner/internal/config"
 	"github.com/rophy/av-scanner/internal/drivers"
 )
@@ -17,40 +18,65 @@ type ScanOptions struct {
 }
 
 type ScanResponse struct {
-	FileID        string               `json:"fileId"`
-	Status        drivers.ScanStatus   `json:"status"`
-	Engine        config.EngineType    `json:"engine"`
-	Signature     string               `json:"signature,omitempty"`
-	RTSResult     *drivers.ScanResult  `json:"rtsResult,omitempty"`
-	TotalDuration int64                `json:"totalDuration"`
+	FileID        string              `json:"fileId"`
+	Status        drivers.ScanStatus  `json:"status"`
+	Engine        config.EngineType   `json:"engine"`
+	Signature     string              `json:"signature,omitempty"`
+	RTSResult     *drivers.ScanResult `json:"rtsResult,omitempty"`
+	TotalDuration int64               `json:"totalDuration"`
 }
 
 type Scanner struct {
-	drivers      map[config.EngineType]drivers.Driver
-	activeEngine config.EngineType
-	config       *config.Config
-	logger       *slog.Logger
+	drivers        map[config.EngineType]drivers.Driver
+	activeEngine   config.EngineType
+	config         *config.Config
+	logger         *slog.Logger
+	detectionCache *cache.DetectionCache
 }
 
 func New(cfg *config.Config, logger *slog.Logger) *Scanner {
+	// Create shared detection cache
+	detectionCache := cache.NewDetectionCache(cache.DefaultTTL)
+
 	s := &Scanner{
-		drivers:      make(map[config.EngineType]drivers.Driver),
-		activeEngine: cfg.ActiveEngine,
-		config:       cfg,
-		logger:       logger,
+		drivers:        make(map[config.EngineType]drivers.Driver),
+		activeEngine:   cfg.ActiveEngine,
+		config:         cfg,
+		logger:         logger,
+		detectionCache: detectionCache,
 	}
 
-	// Initialize drivers
+	// Initialize drivers with shared cache
 	s.drivers[config.EngineClamAV] = drivers.NewClamAVDriver(
 		cfg.Drivers[config.EngineClamAV],
 		logger,
+		detectionCache,
 	)
 	s.drivers[config.EngineTrendMicro] = drivers.NewTrendMicroDriver(
 		cfg.Drivers[config.EngineTrendMicro],
 		logger,
+		detectionCache,
 	)
 
 	return s
+}
+
+// Start starts all driver background watchers
+func (s *Scanner) Start() error {
+	for engine, driver := range s.drivers {
+		if err := driver.Start(); err != nil {
+			s.logger.Error("Failed to start driver", "engine", engine, "error", err)
+		}
+	}
+	return nil
+}
+
+// Stop stops all driver background watchers
+func (s *Scanner) Stop() {
+	for _, driver := range s.drivers {
+		driver.Stop()
+	}
+	s.detectionCache.Stop()
 }
 
 func (s *Scanner) Scan(filePath, fileID, originalName string, size int64, opts ScanOptions) (*ScanResponse, error) {

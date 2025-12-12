@@ -63,6 +63,8 @@ type LogEntry struct {
 
 type Driver interface {
 	Engine() config.EngineType
+	Start() error
+	Stop()
 	RTSWatch(filePath string, opts WatchOptions) (*ScanResult, error)
 	CheckHealth() (*EngineHealth, error)
 	GetInfo() EngineInfo

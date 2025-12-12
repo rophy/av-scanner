@@ -43,6 +43,12 @@ func main() {
 	// Initialize scanner
 	s := scanner.New(cfg, logger)
 
+	// Start background log watchers
+	if err := s.Start(); err != nil {
+		logger.Error("Failed to start scanner", "error", err)
+		os.Exit(1)
+	}
+
 	// Check health of all engines
 	for _, health := range s.CheckHealth() {
 		if health.Healthy {
@@ -90,6 +96,9 @@ func main() {
 	if err := server.Shutdown(ctx); err != nil {
 		logger.Error("Server forced to shutdown", "error", err)
 	}
+
+	// Stop scanner background watchers
+	s.Stop()
 
 	logger.Info("Server exited")
 }

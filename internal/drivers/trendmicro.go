@@ -1,6 +1,7 @@
 package drivers
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -8,28 +9,112 @@ import (
 	"time"
 
 	"github.com/nxadm/tail"
+	"github.com/rophy/av-scanner/internal/cache"
 	"github.com/rophy/av-scanner/internal/config"
 )
 
 var (
 	// TrendMicro DS Agent log patterns
-	// Pattern: "Malware detected: /path/to/file, Malware: EICAR_TEST_FILE"
-	tmMalwareRegex = regexp.MustCompile(`Malware detected:\s+(.+),\s+Malware:\s+(.+)`)
-	// Pattern: "Quarantined: /path/to/file"
+	tmMalwareRegex    = regexp.MustCompile(`Malware detected:\s+(.+),\s+Malware:\s+(.+)`)
 	tmQuarantineRegex = regexp.MustCompile(`Quarantined:\s+(.+)`)
-	// Pattern for clean scan (if logged)
-	tmCleanRegex = regexp.MustCompile(`Scan completed:\s+(.+),\s+Result:\s+Clean`)
 )
 
 type TrendMicroDriver struct {
 	config config.DriverConfig
 	logger *slog.Logger
+	cache  *cache.DetectionCache
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
-func NewTrendMicroDriver(cfg config.DriverConfig, logger *slog.Logger) *TrendMicroDriver {
+func NewTrendMicroDriver(cfg config.DriverConfig, logger *slog.Logger, detectionCache *cache.DetectionCache) *TrendMicroDriver {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &TrendMicroDriver{
 		config: cfg,
 		logger: logger.With("driver", "trendmicro"),
+		cache:  detectionCache,
+		ctx:    ctx,
+		cancel: cancel,
+	}
+}
+
+// Start begins the background log watcher
+func (d *TrendMicroDriver) Start() error {
+	if _, err := os.Stat(d.config.RTSLogPath); err != nil {
+		d.logger.Warn("RTS log file not accessible, background watcher not started", "path", d.config.RTSLogPath)
+		return nil
+	}
+
+	go d.watchLog()
+	d.logger.Info("Background log watcher started", "path", d.config.RTSLogPath)
+	return nil
+}
+
+// Stop stops the background log watcher
+func (d *TrendMicroDriver) Stop() {
+	d.cancel()
+}
+
+func (d *TrendMicroDriver) watchLog() {
+	t, err := tail.TailFile(d.config.RTSLogPath, tail.Config{
+		Follow:    true,
+		ReOpen:    true,
+		Poll:      true,
+		MustExist: true,
+		Location:  &tail.SeekInfo{Offset: 0, Whence: os.SEEK_END},
+	})
+	if err != nil {
+		d.logger.Error("Failed to start log tailer", "error", err)
+		return
+	}
+	defer t.Cleanup()
+
+	for {
+		select {
+		case <-d.ctx.Done():
+			t.Stop()
+			return
+		case line := <-t.Lines:
+			if line == nil || line.Err != nil {
+				continue
+			}
+			d.processLogLine(line.Text)
+		}
+	}
+}
+
+func (d *TrendMicroDriver) processLogLine(line string) {
+	// Check for malware detection
+	if matches := tmMalwareRegex.FindStringSubmatch(line); matches != nil {
+		absPath, err := filepath.Abs(matches[1])
+		if err != nil {
+			absPath = matches[1]
+		}
+
+		d.cache.Add(absPath, &cache.Detection{
+			FilePath:  matches[1],
+			Status:    "infected",
+			Signature: matches[2],
+			Raw:       line,
+		})
+		d.logger.Debug("Cached detection", "path", absPath, "signature", matches[2])
+		return
+	}
+
+	// Check for quarantine
+	if matches := tmQuarantineRegex.FindStringSubmatch(line); matches != nil {
+		absPath, err := filepath.Abs(matches[1])
+		if err != nil {
+			absPath = matches[1]
+		}
+
+		d.cache.Add(absPath, &cache.Detection{
+			FilePath:  matches[1],
+			Status:    "infected",
+			Signature: "",
+			Raw:       line,
+		})
+		d.logger.Debug("Cached quarantine", "path", absPath)
 	}
 }
 
@@ -41,24 +126,18 @@ func (d *TrendMicroDriver) RTSWatch(filePath string, opts WatchOptions) (*ScanRe
 	startTime := time.Now()
 	fileID := filepath.Base(filePath)
 
-	t, err := tail.TailFile(d.config.RTSLogPath, tail.Config{
-		Follow:    true,
-		ReOpen:    true,
-		Poll:      true, // Use polling instead of inotify for shell redirects
-		MustExist: true,
-		Location:  &tail.SeekInfo{Offset: 0, Whence: os.SEEK_END},
-	})
+	absPath, err := filepath.Abs(filePath)
 	if err != nil {
-		return nil, err
+		absPath = filePath
 	}
-	defer t.Cleanup()
 
 	timeout := time.After(opts.Timeout)
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
 
 	for {
 		select {
 		case <-timeout:
-			t.Stop()
 			d.logger.Warn("RTS watch timeout", "filePath", filePath)
 			return &ScanResult{
 				Status:    StatusClean,
@@ -71,77 +150,27 @@ func (d *TrendMicroDriver) RTSWatch(filePath string, opts WatchOptions) (*ScanRe
 				Raw:       map[string]bool{"timeout": true},
 			}, nil
 
-		case line := <-t.Lines:
-			if line == nil || line.Err != nil {
-				continue
-			}
+		case <-ticker.C:
+			if cached, found := d.cache.Get(absPath); found {
+				status := StatusClean
+				if cached.Status == "infected" {
+					status = StatusInfected
+				}
 
-			entry := d.parseLogEntry(line.Text)
-			if entry == nil {
-				continue
-			}
-
-			// Check if this log entry matches our file
-			if d.pathMatches(entry.FilePath, filePath) {
-				t.Stop()
 				return &ScanResult{
-					Status:    entry.Status,
+					Status:    status,
 					Engine:    d.Engine(),
-					Signature: entry.Signature,
+					Signature: cached.Signature,
 					Phase:     PhaseRTS,
 					FilePath:  filePath,
 					FileID:    fileID,
 					Timestamp: time.Now(),
 					Duration:  time.Since(startTime).Milliseconds(),
-					Raw:       map[string]string{"logEntry": line.Text},
+					Raw:       map[string]string{"logEntry": cached.Raw},
 				}, nil
 			}
 		}
 	}
-}
-
-func (d *TrendMicroDriver) parseLogEntry(line string) *LogEntry {
-	// Check for malware detection
-	if matches := tmMalwareRegex.FindStringSubmatch(line); matches != nil {
-		return &LogEntry{
-			Timestamp: time.Now(),
-			FilePath:  matches[1],
-			Status:    StatusInfected,
-			Signature: matches[2],
-			Raw:       line,
-		}
-	}
-
-	// Check for quarantine (also indicates infection)
-	if matches := tmQuarantineRegex.FindStringSubmatch(line); matches != nil {
-		return &LogEntry{
-			Timestamp: time.Now(),
-			FilePath:  matches[1],
-			Status:    StatusInfected,
-			Raw:       line,
-		}
-	}
-
-	// Check for clean result
-	if matches := tmCleanRegex.FindStringSubmatch(line); matches != nil {
-		return &LogEntry{
-			Timestamp: time.Now(),
-			FilePath:  matches[1],
-			Status:    StatusClean,
-			Raw:       line,
-		}
-	}
-
-	return nil
-}
-
-func (d *TrendMicroDriver) pathMatches(logPath, targetPath string) bool {
-	absLog, err1 := filepath.Abs(logPath)
-	absTarget, err2 := filepath.Abs(targetPath)
-	if err1 != nil || err2 != nil {
-		return logPath == targetPath
-	}
-	return absLog == absTarget
 }
 
 func (d *TrendMicroDriver) CheckHealth() (*EngineHealth, error) {
@@ -150,7 +179,6 @@ func (d *TrendMicroDriver) CheckHealth() (*EngineHealth, error) {
 		LastCheck: time.Now(),
 	}
 
-	// Check if RTS log file is readable
 	if _, err := os.Stat(d.config.RTSLogPath); err != nil {
 		health.Healthy = false
 		health.Error = "RTS log not accessible: " + d.config.RTSLogPath

@@ -1,6 +1,7 @@
 package drivers
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -8,25 +9,111 @@ import (
 	"time"
 
 	"github.com/nxadm/tail"
+	"github.com/rophy/av-scanner/internal/cache"
 	"github.com/rophy/av-scanner/internal/config"
 )
 
 var (
 	// Regex patterns support optional timestamp prefix: [YYYY-MM-DD HH:MM:SS]
 	clamavFoundRegex = regexp.MustCompile(`(?:\[[\d-]+\s[\d:]+\]\s)?(.+):\s+(.+)\s+FOUND$`)
-	clamavOKRegex    = regexp.MustCompile(`(?:\[[\d-]+\s[\d:]+\]\s)?(.+):\s+OK$`)
 	clamavMovedRegex = regexp.MustCompile(`(?:\[[\d-]+\s[\d:]+\]\s)?(.+):\s+moved to '(.+)'$`)
 )
 
 type ClamAVDriver struct {
 	config config.DriverConfig
 	logger *slog.Logger
+	cache  *cache.DetectionCache
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
-func NewClamAVDriver(cfg config.DriverConfig, logger *slog.Logger) *ClamAVDriver {
+func NewClamAVDriver(cfg config.DriverConfig, logger *slog.Logger, detectionCache *cache.DetectionCache) *ClamAVDriver {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &ClamAVDriver{
 		config: cfg,
 		logger: logger.With("driver", "clamav"),
+		cache:  detectionCache,
+		ctx:    ctx,
+		cancel: cancel,
+	}
+}
+
+// Start begins the background log watcher
+func (d *ClamAVDriver) Start() error {
+	if _, err := os.Stat(d.config.RTSLogPath); err != nil {
+		d.logger.Warn("RTS log file not accessible, background watcher not started", "path", d.config.RTSLogPath)
+		return nil
+	}
+
+	go d.watchLog()
+	d.logger.Info("Background log watcher started", "path", d.config.RTSLogPath)
+	return nil
+}
+
+// Stop stops the background log watcher
+func (d *ClamAVDriver) Stop() {
+	d.cancel()
+}
+
+func (d *ClamAVDriver) watchLog() {
+	t, err := tail.TailFile(d.config.RTSLogPath, tail.Config{
+		Follow:    true,
+		ReOpen:    true,
+		MustExist: true,
+		Location:  &tail.SeekInfo{Offset: 0, Whence: os.SEEK_END},
+	})
+	if err != nil {
+		d.logger.Error("Failed to start log tailer", "error", err)
+		return
+	}
+	defer t.Cleanup()
+
+	for {
+		select {
+		case <-d.ctx.Done():
+			t.Stop()
+			return
+		case line := <-t.Lines:
+			if line == nil || line.Err != nil {
+				continue
+			}
+			d.processLogLine(line.Text)
+		}
+	}
+}
+
+func (d *ClamAVDriver) processLogLine(line string) {
+	// Check for FOUND (infected)
+	if matches := clamavFoundRegex.FindStringSubmatch(line); matches != nil {
+		absPath, err := filepath.Abs(matches[1])
+		if err != nil {
+			absPath = matches[1]
+		}
+
+		d.cache.Add(absPath, &cache.Detection{
+			FilePath:  matches[1],
+			Status:    "infected",
+			Signature: matches[2],
+			Raw:       line,
+		})
+		d.logger.Debug("Cached detection", "path", absPath, "signature", matches[2])
+		return
+	}
+
+	// Check for moved (infected, after quarantine)
+	if matches := clamavMovedRegex.FindStringSubmatch(line); matches != nil {
+		absPath, err := filepath.Abs(matches[1])
+		if err != nil {
+			absPath = matches[1]
+		}
+
+		d.cache.Add(absPath, &cache.Detection{
+			FilePath:  matches[1],
+			Status:    "infected",
+			Signature: "",
+			Raw:       line,
+		})
+		d.logger.Debug("Cached quarantine", "path", absPath)
 	}
 }
 
@@ -38,24 +125,18 @@ func (d *ClamAVDriver) RTSWatch(filePath string, opts WatchOptions) (*ScanResult
 	startTime := time.Now()
 	fileID := filepath.Base(filePath)
 
-	t, err := tail.TailFile(d.config.RTSLogPath, tail.Config{
-		Follow:    true,
-		ReOpen:    true,
-		Poll:      true, // Use polling instead of inotify for shell redirects
-		MustExist: true,
-		Location:  &tail.SeekInfo{Offset: 0, Whence: os.SEEK_END},
-	})
+	absPath, err := filepath.Abs(filePath)
 	if err != nil {
-		return nil, err
+		absPath = filePath
 	}
-	defer t.Cleanup()
 
 	timeout := time.After(opts.Timeout)
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
 
 	for {
 		select {
 		case <-timeout:
-			t.Stop()
 			d.logger.Warn("RTS watch timeout", "filePath", filePath)
 			return &ScanResult{
 				Status:    StatusClean,
@@ -68,77 +149,27 @@ func (d *ClamAVDriver) RTSWatch(filePath string, opts WatchOptions) (*ScanResult
 				Raw:       map[string]bool{"timeout": true},
 			}, nil
 
-		case line := <-t.Lines:
-			if line == nil || line.Err != nil {
-				continue
-			}
+		case <-ticker.C:
+			if cached, found := d.cache.Get(absPath); found {
+				status := StatusClean
+				if cached.Status == "infected" {
+					status = StatusInfected
+				}
 
-			entry := d.parseLogEntry(line.Text)
-			if entry == nil {
-				continue
-			}
-
-			// Check if this log entry matches our file
-			if d.pathMatches(entry.FilePath, filePath) {
-				t.Stop()
 				return &ScanResult{
-					Status:    entry.Status,
+					Status:    status,
 					Engine:    d.Engine(),
-					Signature: entry.Signature,
+					Signature: cached.Signature,
 					Phase:     PhaseRTS,
 					FilePath:  filePath,
 					FileID:    fileID,
 					Timestamp: time.Now(),
 					Duration:  time.Since(startTime).Milliseconds(),
-					Raw:       map[string]string{"logEntry": line.Text},
+					Raw:       map[string]string{"logEntry": cached.Raw},
 				}, nil
 			}
 		}
 	}
-}
-
-func (d *ClamAVDriver) parseLogEntry(line string) *LogEntry {
-	// Check for FOUND (infected)
-	if matches := clamavFoundRegex.FindStringSubmatch(line); matches != nil {
-		return &LogEntry{
-			Timestamp: time.Now(),
-			FilePath:  matches[1],
-			Status:    StatusInfected,
-			Signature: matches[2],
-			Raw:       line,
-		}
-	}
-
-	// Check for OK (clean)
-	if matches := clamavOKRegex.FindStringSubmatch(line); matches != nil {
-		return &LogEntry{
-			Timestamp: time.Now(),
-			FilePath:  matches[1],
-			Status:    StatusClean,
-			Raw:       line,
-		}
-	}
-
-	// Check for moved (infected, after quarantine)
-	if matches := clamavMovedRegex.FindStringSubmatch(line); matches != nil {
-		return &LogEntry{
-			Timestamp: time.Now(),
-			FilePath:  matches[1],
-			Status:    StatusInfected,
-			Raw:       line,
-		}
-	}
-
-	return nil
-}
-
-func (d *ClamAVDriver) pathMatches(logPath, targetPath string) bool {
-	absLog, err1 := filepath.Abs(logPath)
-	absTarget, err2 := filepath.Abs(targetPath)
-	if err1 != nil || err2 != nil {
-		return logPath == targetPath
-	}
-	return absLog == absTarget
 }
 
 func (d *ClamAVDriver) CheckHealth() (*EngineHealth, error) {
@@ -147,7 +178,6 @@ func (d *ClamAVDriver) CheckHealth() (*EngineHealth, error) {
 		LastCheck: time.Now(),
 	}
 
-	// Check if RTS log file is readable
 	if _, err := os.Stat(d.config.RTSLogPath); err != nil {
 		health.Healthy = false
 		health.Error = "RTS log not accessible: " + d.config.RTSLogPath
