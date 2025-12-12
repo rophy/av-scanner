@@ -102,6 +102,7 @@ func (a *API) handleScan(w http.ResponseWriter, r *http.Request) {
 	// Return sanitized response
 	response := map[string]interface{}{
 		"fileId":   result.FileID,
+		"fileName": header.Filename,
 		"status":   result.Status,
 		"engine":   result.Engine,
 		"duration": result.TotalDuration,
