@@ -28,7 +28,7 @@ Both ClamAV and Trend Micro DS Agent run on a **dedicated Ubuntu VM**. Both engi
 │           └───────────┬───────────────────┘                 │
 │                       │                                     │
 │  ┌────────────────────▼────────────────────────────────┐   │
-│  │              AV Scanner Service                      │   │
+│  │         AV Scanner Service (Podman + Quadlet)        │   │
 │  │                                                      │   │
 │  │  - RTS log file (monitors for scan results)          │   │
 │  │  - Scan binary (executes for manual scans)           │   │
@@ -45,21 +45,23 @@ Both ClamAV and Trend Micro DS Agent run on a **dedicated Ubuntu VM**. Both engi
 - **RTS-first architecture**: Monitors RTS log for real-time scan results
 - **Manual scan support**: Executes scan binary for on-demand scanning
 - **Ephemeral file handling**: Files are deleted immediately after scanning
+- **Systemd integration**: Container managed via Podman Quadlet
 
-## Quick Start with Multipass
+## Quick Start
 
-### 1. Install Multipass
+### 1. Install Prerequisites
 
 ```bash
-# Ubuntu/Debian
+# Install Multipass (Ubuntu/Debian)
 sudo snap install multipass
 
-# macOS
-brew install multipass
-
-# Windows
-# Download from https://multipass.run/download/windows
+# Install Ansible (in a virtualenv named 'venv' - required by Makefile)
+python3 -m venv venv
+source venv/bin/activate
+pip install ansible
 ```
+
+> **Note:** The `venv` directory must exist with Ansible installed. `make deploy` automatically activates it.
 
 ### 2. Create the Scanning VM
 
@@ -71,119 +73,30 @@ multipass launch --name av-scanner --cpus 2 --memory 2G --disk 10G 24.04
 multipass list
 ```
 
-### 3. Install ClamAV in the VM
+### 3. Build and Deploy
 
 ```bash
-# Enter the VM
-multipass shell av-scanner
+# Get VM IP address
+export AV_SCANNER_IP=$(multipass info av-scanner | grep IPv4 | awk '{print $2}')
 
-# Inside VM: Install ClamAV
-sudo apt-get update
-sudo apt-get install -y clamav clamav-daemon
+# Copy your SSH key to the VM
+multipass exec av-scanner -- bash -c "mkdir -p ~/.ssh && chmod 700 ~/.ssh"
+cat ~/.ssh/id_rsa.pub | multipass exec av-scanner -- bash -c "cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
 
-# Wait for freshclam to download virus definitions (may take a minute)
-sudo systemctl stop clamav-freshclam
-sudo freshclam
-sudo systemctl start clamav-freshclam
-
-# Start ClamAV daemon
-sudo systemctl enable clamav-daemon
-sudo systemctl start clamav-daemon
-
-# Create scan directory
-sudo mkdir -p /tmp/av-scanner
-sudo chmod 777 /tmp/av-scanner
-
-# Exit VM
-exit
+# Build the Docker image locally and deploy to VM
+make deploy
 ```
 
-### 3a. (Optional) Enable On-Access Scanning (RTS)
+The `make deploy` command will:
+1. Build the Docker image locally
+2. Save it to a tarball
+3. Transfer the image to the VM via Ansible
+4. Load the image into Podman on the VM
+5. Create a Quadlet systemd service
+6. Start and enable the service
+7. Wait for health check to pass
 
-On-access scanning uses `clamonacc` which is included with `clamav-daemon`.
-It requires kernel fanotify support and additional configuration.
-
-```bash
-# Enter the VM
-multipass shell av-scanner
-
-# Configure clamd for on-access scanning
-sudo tee -a /etc/clamav/clamd.conf << 'EOF'
-
-# On-Access Scanning Configuration
-OnAccessIncludePath /tmp/av-scanner
-OnAccessExcludeUname clamav
-OnAccessPrevention yes
-OnAccessDisableDDD yes
-EOF
-
-# Restart clamd to apply changes
-sudo systemctl restart clamav-daemon
-
-# Create systemd service for clamonacc
-sudo tee /etc/systemd/system/clamav-clamonacc.service << 'EOF'
-[Unit]
-Description=ClamAV On-Access Scanner
-Requires=clamav-daemon.service
-After=clamav-daemon.service
-
-[Service]
-Type=simple
-User=root
-ExecStart=/usr/sbin/clamonacc --foreground --log=/var/log/clamav/clamonacc.log --move=/tmp/quarantine
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-# Create quarantine and log directories
-sudo mkdir -p /tmp/quarantine
-sudo touch /var/log/clamav/clamonacc.log
-sudo chown clamav:clamav /var/log/clamav/clamonacc.log
-
-# Enable and start clamonacc
-sudo systemctl daemon-reload
-sudo systemctl enable clamav-clamonacc
-sudo systemctl start clamav-clamonacc
-
-# Verify it's running
-sudo systemctl status clamav-clamonacc
-
-# Exit VM
-exit
-```
-
-See [ClamAV On-Access Scanning Documentation](https://docs.clamav.net/manual/OnAccess.html) for more details.
-
-### 4. Install Node.js and Deploy Scanner Service
-
-```bash
-# Enter the VM
-multipass shell av-scanner
-
-# Install Node.js 20
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt-get install -y nodejs
-
-# Clone/copy your project to the VM
-# Option A: Clone from git
-git clone <your-repo> /home/ubuntu/av-scanner
-
-# Option B: Transfer files from host
-exit
-multipass transfer -r ./av-scanner av-scanner:/home/ubuntu/
-multipass shell av-scanner
-
-# Build and start the service
-cd /home/ubuntu/av-scanner
-npm install
-npm run build
-npm start
-```
-
-### 5. Access the Scanner API
+### 4. Access the Scanner API
 
 ```bash
 # Get VM IP address
@@ -194,6 +107,35 @@ curl http://<VM_IP>:3000/api/v1/health
 
 # Scan a file
 curl -X POST -F "file=@testfile.txt" http://<VM_IP>:3000/api/v1/scan
+```
+
+## Makefile Targets
+
+| Target | Description |
+|--------|-------------|
+| `make build` | Build the Docker image locally |
+| `make deploy` | Build, save, and deploy image to VM |
+| `make clean` | Remove local image and tarball |
+
+## Service Management
+
+The scanner runs as a systemd service via Podman Quadlet:
+
+```bash
+# SSH into VM
+multipass shell av-scanner
+
+# Check service status
+sudo systemctl status av-scanner
+
+# View logs
+sudo journalctl -u av-scanner -f
+
+# Restart service
+sudo systemctl restart av-scanner
+
+# Stop service
+sudo systemctl stop av-scanner
 ```
 
 ## Multipass VM Management
@@ -208,9 +150,6 @@ multipass stop av-scanner
 
 # Shell into VM
 multipass shell av-scanner
-
-# Transfer files to VM
-multipass transfer ./file.txt av-scanner:/home/ubuntu/
 
 # Delete VM
 multipass delete av-scanner
@@ -227,6 +166,14 @@ multipass purge
 | `CLAMAV_SCAN_BINARY_PATH` | /usr/bin/clamdscan | ClamAV scan binary |
 | `TM_RTS_LOG_PATH` | /var/log/ds_agent/ds_agent.log | DS Agent RTS log file |
 | `TM_SCAN_BINARY_PATH` | /opt/ds_agent/dsa_scan | DS Agent scan binary |
+
+To change configuration, edit the Quadlet file on the VM:
+
+```bash
+sudo vi /etc/containers/systemd/av-scanner.container
+sudo systemctl daemon-reload
+sudo systemctl restart av-scanner
+```
 
 ## API
 
@@ -263,13 +210,8 @@ The EICAR test file must contain the exact 68-byte signature with no extra conte
 curl -s https://secure.eicar.org/eicar.com -o /tmp/eicar.com
 
 # Test manual scan (inside VM)
-clamdscan /tmp/eicar.com
+multipass exec av-scanner -- clamdscan /tmp/eicar.com
 # Expected: Win.Test.EICAR_HDB-1 FOUND
-
-# Test on-access scanning (if enabled)
-cp /tmp/eicar.com /tmp/av-scanner/
-cat /tmp/av-scanner/eicar.com
-# Expected: Operation not permitted (file blocked by clamonacc)
 
 # Test via API
 curl -X POST -F "file=@/tmp/eicar.com" http://<VM_IP>:3000/api/v1/scan

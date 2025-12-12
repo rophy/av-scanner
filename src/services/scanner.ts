@@ -47,42 +47,23 @@ export class ScannerService {
     let signature: string | undefined;
 
     try {
-      // Phase 1: Wait for RTS to complete
-      if (driver.rtsEnabled) {
-        this.logger.debug('Waiting for RTS scan', { fileId: request.fileId });
-        rtsResult = await driver.rtsWatch(request.filePath, {
-          timeout: options.rtsTimeout || this.config.drivers[driver.engine]?.timeout || 60000,
-          pollInterval: 100,
+      // RTS-only mode: Wait for host AV to scan the file
+      this.logger.debug('Waiting for RTS scan', { fileId: request.fileId });
+      rtsResult = await driver.rtsWatch(request.filePath, {
+        timeout: options.rtsTimeout || this.config.drivers[driver.engine]?.timeout || 60000,
+        pollInterval: 100,
+      });
+
+      if (rtsResult.status === 'infected') {
+        finalStatus = 'infected';
+        signature = rtsResult.signature;
+        this.logger.warn('RTS detected infection', {
+          fileId: request.fileId,
+          signature,
         });
-
-        if (rtsResult.status === 'infected') {
-          finalStatus = 'infected';
-          signature = rtsResult.signature;
-          this.logger.warn('RTS detected infection', {
-            fileId: request.fileId,
-            signature,
-          });
-        } else if (rtsResult.status === 'error') {
-          this.logger.warn('RTS scan error', { fileId: request.fileId, raw: rtsResult.raw });
-        }
-      }
-
-      // Phase 2: Manual scan (if RTS was clean and not skipped)
-      if (finalStatus === 'clean' && !options.skipManualScan) {
-        this.logger.debug('Running manual scan', { fileId: request.fileId });
-        manualResult = await driver.manualScan(request.filePath);
-
-        if (manualResult.status === 'infected') {
-          finalStatus = 'infected';
-          signature = manualResult.signature;
-          this.logger.warn('Manual scan detected infection', {
-            fileId: request.fileId,
-            signature,
-          });
-        } else if (manualResult.status === 'error') {
-          finalStatus = 'error';
-          this.logger.error('Manual scan error', { fileId: request.fileId, raw: manualResult.raw });
-        }
+      } else if (rtsResult.status === 'error') {
+        finalStatus = 'error';
+        this.logger.warn('RTS scan error', { fileId: request.fileId, raw: rtsResult.raw });
       }
     } finally {
       // Always delete the file after scanning - security requirement

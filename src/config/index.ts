@@ -10,19 +10,15 @@ export function loadConfig(): AppConfig {
     activeEngine,
 
     drivers: {
-      // Both drivers have the same interface: rtsLogPath + scanBinaryPath
+      // RTS-only mode: both drivers watch log files for scan results
       clamav: {
         engine: 'clamav',
-        rtsEnabled: process.env.CLAMAV_RTS_ENABLED === 'true',
         rtsLogPath: process.env.CLAMAV_RTS_LOG_PATH || '/var/log/clamav/clamonacc.log',
-        scanBinaryPath: process.env.CLAMAV_SCAN_BINARY_PATH || '/usr/bin/clamdscan',
         timeout: parseInt(process.env.CLAMAV_TIMEOUT || '60000', 10),
       },
       trendmicro: {
         engine: 'trendmicro',
-        rtsEnabled: true, // Always true for DS Agent
         rtsLogPath: process.env.TM_RTS_LOG_PATH || '/var/log/ds_agent/ds_agent.log',
-        scanBinaryPath: process.env.TM_SCAN_BINARY_PATH || '/opt/ds_agent/dsa_scan',
         timeout: parseInt(process.env.TM_TIMEOUT || '60000', 10),
       },
     },

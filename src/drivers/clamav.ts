@@ -1,4 +1,4 @@
-import { spawn } from 'child_process';
+import fs from 'fs';
 import path from 'path';
 import { Tail } from 'tail';
 import { AntivirusDriver } from './base';
@@ -7,7 +7,6 @@ import {
   EngineHealth,
   EngineInfo,
   LogEntry,
-  RawEngineResult,
   UnifiedResult,
   WatchOptions,
 } from '../types';
@@ -37,19 +36,6 @@ export class ClamAVDriver extends AntivirusDriver {
   ): Promise<UnifiedResult> {
     const startTime = Date.now();
     const fileId = path.basename(filePath);
-
-    if (!this.clamConfig.rtsEnabled) {
-      this.logger.info('RTS not enabled for ClamAV, skipping RTS watch');
-      return this.createUnifiedResult(
-        filePath,
-        fileId,
-        'clean',
-        'rts',
-        startTime,
-        undefined,
-        { skipped: true, reason: 'RTS not enabled' }
-      );
-    }
 
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
@@ -102,55 +88,20 @@ export class ClamAVDriver extends AntivirusDriver {
   }
 
   async manualScan(filePath: string): Promise<UnifiedResult> {
+    // RTS-only mode - manual scan not supported
+    // The file should be scanned by host RTS when written to scan directory
     const startTime = Date.now();
     const fileId = path.basename(filePath);
 
-    const result = await this.executeScan(filePath);
-    const parsed = this.parseManualScanOutput(result);
-
-    return {
-      ...parsed,
+    return this.createUnifiedResult(
       filePath,
       fileId,
-      duration: Date.now() - startTime,
-    };
-  }
-
-  private executeScan(filePath: string): Promise<RawEngineResult> {
-    return new Promise((resolve) => {
-      // clamdscan --fdpass --stdout --no-summary <file>
-      const args = ['--fdpass', '--stdout', '--no-summary', filePath];
-      const proc = spawn(this.clamConfig.scanBinaryPath, args);
-
-      let stdout = '';
-      let stderr = '';
-
-      proc.stdout.on('data', (data) => {
-        stdout += data.toString();
-      });
-
-      proc.stderr.on('data', (data) => {
-        stderr += data.toString();
-      });
-
-      proc.on('close', (exitCode) => {
-        resolve({
-          engine: 'clamav',
-          exitCode: exitCode ?? -1,
-          stdout,
-          stderr,
-        });
-      });
-
-      proc.on('error', (error) => {
-        resolve({
-          engine: 'clamav',
-          exitCode: -1,
-          stdout,
-          stderr: error.message,
-        });
-      });
-    });
+      'error',
+      'manual',
+      startTime,
+      undefined,
+      { error: 'Manual scan not supported in RTS-only mode' }
+    );
   }
 
   protected parseLogEntry(logLine: string): LogEntry | null {
@@ -181,75 +132,22 @@ export class ClamAVDriver extends AntivirusDriver {
     return null;
   }
 
-  protected parseManualScanOutput(result: RawEngineResult): UnifiedResult {
-    const startTime = Date.now();
-    const lines = result.stdout.trim().split('\n');
-
-    for (const line of lines) {
-      const entry = this.parseLogEntry(line);
-      if (entry) {
-        return this.createUnifiedResult(
-          entry.filePath,
-          path.basename(entry.filePath),
-          entry.status,
-          'manual',
-          startTime,
-          entry.signature,
-          result
-        );
-      }
-    }
-
-    // Exit codes: 0 = clean, 1 = virus found, 2+ = error
-    const status = result.exitCode === 0 ? 'clean' : result.exitCode === 1 ? 'infected' : 'error';
-
-    return this.createUnifiedResult(
-      '',
-      '',
-      status,
-      'manual',
-      startTime,
-      undefined,
-      result
-    );
-  }
-
   async checkHealth(): Promise<EngineHealth> {
     try {
-      // Execute scan binary with --version
-      const result = await new Promise<RawEngineResult>((resolve) => {
-        const proc = spawn(this.clamConfig.scanBinaryPath, ['--version']);
-        let stdout = '';
-        let stderr = '';
-
-        proc.stdout.on('data', (data) => { stdout += data.toString(); });
-        proc.stderr.on('data', (data) => { stderr += data.toString(); });
-
-        proc.on('close', (exitCode) => {
-          resolve({ engine: 'clamav', exitCode: exitCode ?? -1, stdout, stderr });
-        });
-
-        proc.on('error', (error) => {
-          resolve({ engine: 'clamav', exitCode: -1, stdout, stderr: error.message });
-        });
-      });
-
-      const healthy = result.exitCode === 0 || result.stdout.includes('ClamAV');
-      const versionMatch = result.stdout.match(/ClamAV\s+([\d.]+)/);
+      // RTS-only mode - check if log file exists and is readable
+      await fs.promises.access(this.clamConfig.rtsLogPath, fs.constants.R_OK);
 
       return {
         engine: 'clamav',
-        healthy,
-        version: versionMatch?.[1],
+        healthy: true,
         lastCheck: new Date(),
-        error: healthy ? undefined : result.stderr,
       };
     } catch (error) {
       return {
         engine: 'clamav',
         healthy: false,
         lastCheck: new Date(),
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: `RTS log not accessible: ${this.clamConfig.rtsLogPath}`,
       };
     }
   }
@@ -258,8 +156,8 @@ export class ClamAVDriver extends AntivirusDriver {
     return {
       engine: 'clamav',
       available: true,
-      rtsEnabled: this.clamConfig.rtsEnabled,
-      manualScanAvailable: true,
+      rtsEnabled: true,
+      manualScanAvailable: false,
     };
   }
 

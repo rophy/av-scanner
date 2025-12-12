@@ -1,4 +1,4 @@
-import { spawn } from 'child_process';
+import fs from 'fs';
 import path from 'path';
 import { Tail } from 'tail';
 import { AntivirusDriver } from './base';
@@ -6,7 +6,6 @@ import {
   EngineHealth,
   EngineInfo,
   LogEntry,
-  RawEngineResult,
   TrendMicroConfig,
   UnifiedResult,
   WatchOptions,
@@ -97,55 +96,20 @@ export class TrendMicroDriver extends AntivirusDriver {
   }
 
   async manualScan(filePath: string): Promise<UnifiedResult> {
+    // RTS-only mode - manual scan not supported
+    // The file should be scanned by host RTS when written to scan directory
     const startTime = Date.now();
     const fileId = path.basename(filePath);
 
-    const result = await this.executeScan(filePath);
-    const parsed = this.parseManualScanOutput(result);
-
-    return {
-      ...parsed,
+    return this.createUnifiedResult(
       filePath,
       fileId,
-      duration: Date.now() - startTime,
-    };
-  }
-
-  private executeScan(filePath: string): Promise<RawEngineResult> {
-    return new Promise((resolve) => {
-      // dsa_scan --target <file> --json
-      const args = ['--target', filePath, '--json'];
-      const proc = spawn(this.tmConfig.scanBinaryPath, args);
-
-      let stdout = '';
-      let stderr = '';
-
-      proc.stdout.on('data', (data) => {
-        stdout += data.toString();
-      });
-
-      proc.stderr.on('data', (data) => {
-        stderr += data.toString();
-      });
-
-      proc.on('close', (exitCode) => {
-        resolve({
-          engine: 'trendmicro',
-          exitCode: exitCode ?? -1,
-          stdout,
-          stderr,
-        });
-      });
-
-      proc.on('error', (error) => {
-        resolve({
-          engine: 'trendmicro',
-          exitCode: -1,
-          stdout,
-          stderr: error.message,
-        });
-      });
-    });
+      'error',
+      'manual',
+      startTime,
+      undefined,
+      { error: 'Manual scan not supported in RTS-only mode' }
+    );
   }
 
   protected parseLogEntry(logLine: string): LogEntry | null {
@@ -209,87 +173,22 @@ export class TrendMicroDriver extends AntivirusDriver {
     };
   }
 
-  protected parseManualScanOutput(result: RawEngineResult): UnifiedResult {
-    const startTime = Date.now();
-
-    // Try to parse JSON output from dsa_scan --json
-    try {
-      const jsonResult = JSON.parse(result.stdout);
-
-      const infected = jsonResult.infected === true ||
-                      jsonResult.status === 'infected' ||
-                      (jsonResult.threats && jsonResult.threats.length > 0);
-
-      const signature = jsonResult.threats?.[0]?.name ||
-                       jsonResult.signature ||
-                       jsonResult.malware_name;
-
-      return this.createUnifiedResult(
-        jsonResult.file || '',
-        '',
-        infected ? 'infected' : 'clean',
-        'manual',
-        startTime,
-        signature,
-        jsonResult
-      );
-    } catch {
-      this.logger.debug('Failed to parse JSON output, falling back to text parsing');
-    }
-
-    // Text-based parsing fallback
-    const infected = result.stdout.toLowerCase().includes('infected') ||
-                    result.stdout.toLowerCase().includes('virus') ||
-                    result.stdout.toLowerCase().includes('malware');
-
-    const signatureMatch = result.stdout.match(/(?:virus|malware|threat):\s*(.+)/i);
-
-    return this.createUnifiedResult(
-      '',
-      '',
-      infected ? 'infected' : result.exitCode === 0 ? 'clean' : 'error',
-      'manual',
-      startTime,
-      signatureMatch?.[1]?.trim(),
-      result
-    );
-  }
-
   async checkHealth(): Promise<EngineHealth> {
     try {
-      const result = await new Promise<RawEngineResult>((resolve) => {
-        const proc = spawn(this.tmConfig.scanBinaryPath, ['--version']);
-        let stdout = '';
-        let stderr = '';
-
-        proc.stdout.on('data', (data) => { stdout += data.toString(); });
-        proc.stderr.on('data', (data) => { stderr += data.toString(); });
-
-        proc.on('close', (exitCode) => {
-          resolve({ engine: 'trendmicro', exitCode: exitCode ?? -1, stdout, stderr });
-        });
-
-        proc.on('error', (error) => {
-          resolve({ engine: 'trendmicro', exitCode: -1, stdout, stderr: error.message });
-        });
-      });
-
-      const healthy = result.exitCode === 0 || result.stdout.length > 0;
-      const versionMatch = result.stdout.match(/(?:version|v)[\s:]*([^\s]+)/i);
+      // RTS-only mode - check if log file exists and is readable
+      await fs.promises.access(this.tmConfig.rtsLogPath, fs.constants.R_OK);
 
       return {
         engine: 'trendmicro',
-        healthy,
-        version: versionMatch?.[1],
+        healthy: true,
         lastCheck: new Date(),
-        error: healthy ? undefined : result.stderr,
       };
     } catch (error) {
       return {
         engine: 'trendmicro',
         healthy: false,
         lastCheck: new Date(),
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: `RTS log not accessible: ${this.tmConfig.rtsLogPath}`,
       };
     }
   }
@@ -298,8 +197,8 @@ export class TrendMicroDriver extends AntivirusDriver {
     return {
       engine: 'trendmicro',
       available: true,
-      rtsEnabled: true, // DS Agent RTS is always on
-      manualScanAvailable: true,
+      rtsEnabled: true,
+      manualScanAvailable: false,
     };
   }
 

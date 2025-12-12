@@ -4,13 +4,16 @@ import {
   EngineInfo,
   EngineType,
   LogEntry,
-  RawEngineResult,
   ScanStatus,
   UnifiedResult,
   WatchOptions,
 } from '../types';
 import { Logger } from '../utils/logger';
 
+/**
+ * Base driver for AV engines - RTS-only mode
+ * Watches log files for scan results, no direct binary execution
+ */
 export abstract class AntivirusDriver {
   protected config: DriverConfig;
   protected logger: Logger;
@@ -24,10 +27,6 @@ export abstract class AntivirusDriver {
     return this.config.engine;
   }
 
-  get rtsEnabled(): boolean {
-    return this.config.rtsEnabled;
-  }
-
   abstract rtsWatch(filePath: string, options?: WatchOptions): Promise<UnifiedResult>;
 
   abstract manualScan(filePath: string): Promise<UnifiedResult>;
@@ -37,8 +36,6 @@ export abstract class AntivirusDriver {
   abstract getInfo(): EngineInfo;
 
   protected abstract parseLogEntry(logLine: string): LogEntry | null;
-
-  protected abstract parseManualScanOutput(result: RawEngineResult): UnifiedResult;
 
   protected normalizeStatus(
     infected: boolean,

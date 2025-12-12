@@ -1,0 +1,12 @@
+# Development container
+# Runs as current user with source mounted
+
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Install dev tools
+RUN apk add --no-cache git
+
+# Don't copy source - it's mounted
+# Don't install deps - done via make dev

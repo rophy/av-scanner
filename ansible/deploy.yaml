@@ -1,0 +1,185 @@
+---
+- name: Deploy AV Scanner to VM
+  hosts: av-scanner
+  become: true
+  vars:
+    app_dir: /home/ubuntu/av-scanner
+    av_engine: clamav
+    image_name: av-scanner
+    image_tag: latest
+    image_file: "{{ playbook_dir }}/../av-scanner-image.tar"
+
+  tasks:
+    # ============================================
+    # Podman Installation
+    # ============================================
+    - name: Install Podman
+      apt:
+        name:
+          - podman
+        state: present
+        update_cache: true
+
+    # ============================================
+    # ClamAV Installation
+    # ============================================
+    - name: Install ClamAV
+      apt:
+        name:
+          - clamav
+          - clamav-daemon
+        state: present
+
+    - name: Stop freshclam for initial update
+      systemd:
+        name: clamav-freshclam
+        state: stopped
+
+    - name: Update virus definitions
+      command: freshclam
+      register: freshclam_result
+      changed_when: "'Database updated' in freshclam_result.stdout"
+      failed_when: false
+
+    - name: Start freshclam
+      systemd:
+        name: clamav-freshclam
+        state: started
+        enabled: true
+
+    - name: Start ClamAV daemon
+      systemd:
+        name: clamav-daemon
+        state: started
+        enabled: true
+
+    - name: Ensure ClamAV log files are readable
+      file:
+        path: "{{ item }}"
+        mode: "0644"
+      loop:
+        - /var/log/clamav/clamonacc.log
+      failed_when: false
+
+    # ============================================
+    # Application Deployment
+    # ============================================
+    - name: Create application directory
+      file:
+        path: "{{ app_dir }}"
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: "0755"
+
+    - name: Create scan directory
+      file:
+        path: /tmp/av-scanner
+        state: directory
+        mode: "0777"
+
+    - name: Create mount point directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - /var/log/ds_agent
+
+    - name: Create empty RTS log files if not exists
+      file:
+        path: "{{ item }}"
+        state: touch
+        mode: "0644"
+      loop:
+        - /var/log/ds_agent/ds_agent.log
+
+    - name: Copy container image to VM
+      copy:
+        src: "{{ image_file }}"
+        dest: "{{ app_dir }}/av-scanner-image.tar"
+        owner: ubuntu
+        group: ubuntu
+        mode: "0644"
+
+    - name: Load container image
+      command: podman load -i {{ app_dir }}/av-scanner-image.tar
+      register: podman_load
+      changed_when: "'Loaded image' in podman_load.stdout"
+      notify: Restart av-scanner
+
+    # ============================================
+    # Quadlet Configuration
+    # ============================================
+    - name: Create Quadlet directory
+      file:
+        path: /etc/containers/systemd
+        state: directory
+        mode: "0755"
+
+    - name: Create Quadlet container file
+      copy:
+        content: |
+          [Unit]
+          Description=AV Scanner Service
+          After=clamav-daemon.service
+
+          [Container]
+          Image=docker.io/library/{{ image_name }}:{{ image_tag }}
+          PublishPort=3000:3000
+          Environment=NODE_ENV=production
+          Environment=AV_ENGINE={{ av_engine }}
+          Environment=CLAMAV_RTS_LOG_PATH=/var/log/clamav/clamonacc.log
+          Environment=TM_RTS_LOG_PATH=/var/log/ds_agent/ds_agent.log
+          Environment=LOG_LEVEL=info
+          Volume=/var/log/clamav:/var/log/clamav:ro
+          Volume=/var/log/ds_agent:/var/log/ds_agent:ro
+          Volume=/tmp/av-scanner:/tmp/av-scanner
+
+          [Service]
+          Restart=always
+          TimeoutStartSec=300
+
+          [Install]
+          WantedBy=multi-user.target
+        dest: /etc/containers/systemd/av-scanner.container
+        mode: "0644"
+      notify: Reload systemd
+
+    # ============================================
+    # Start Service
+    # ============================================
+    - name: Reload systemd to pick up Quadlet
+      systemd:
+        daemon_reload: true
+
+    - name: Start av-scanner service
+      systemd:
+        name: av-scanner
+        state: started
+        enabled: true
+
+    - name: Wait for service to be ready
+      uri:
+        url: "http://localhost:3000/api/v1/health"
+        method: GET
+        status_code: [200, 503]
+      register: health_check
+      until: health_check.status == 200
+      retries: 30
+      delay: 2
+
+    - name: Display service status
+      debug:
+        msg: "AV Scanner is running at http://{{ ansible_host }}:3000"
+
+  handlers:
+    - name: Reload systemd
+      systemd:
+        daemon_reload: true
+
+    - name: Restart av-scanner
+      systemd:
+        name: av-scanner
+        state: restarted
+        daemon_reload: true

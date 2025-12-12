@@ -14,14 +14,6 @@ export interface UnifiedResult {
   raw?: unknown;
 }
 
-export interface RawEngineResult {
-  engine: EngineType;
-  exitCode: number;
-  stdout: string;
-  stderr: string;
-  logEntry?: string;
-}
-
 export interface ScanRequest {
   fileId: string;
   filePath: string;
@@ -70,9 +62,7 @@ export interface WatchOptions {
 
 export interface DriverConfig {
   engine: EngineType;
-  rtsEnabled: boolean;
   rtsLogPath: string;
-  scanBinaryPath: string;
   timeout: number;
 }
 
@@ -87,7 +77,7 @@ export interface AppConfig {
   };
 }
 
-// Both drivers share the same interface: log file + binary
+// Both drivers share the same RTS-only interface: log file watching
 export interface ClamAVConfig extends DriverConfig {
   engine: 'clamav';
 }

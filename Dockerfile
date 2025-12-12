@@ -1,12 +1,12 @@
-# AV Scanner Service
-# Connects to AV engines (ClamAV or Trend Micro DS Agent) running on the HOST machine
-# via mounted log files and binaries.
+# AV Scanner Service - RTS-only mode
+# Watches AV engine log files on the HOST machine for scan results.
+# Files uploaded to the scan directory trigger host RTS (Real-Time Scan).
 #
 # Interface for both engines:
 # - RTS Log file: monitored for real-time scan results
-# - Scan binary: executed for manual scans
+# - Scan directory: shared with host for RTS triggers
 
-FROM node:20-alpine AS builder
+FROM node:20-slim AS builder
 
 WORKDIR /app
 
@@ -17,8 +17,8 @@ COPY tsconfig.json ./
 COPY src ./src
 RUN npm run build
 
-# Production image - minimal, no AV software included
-# AV binaries are mounted from host
+# Production image - RTS-only mode
+# Watches host AV log files for scan results, no direct binary execution
 FROM node:20-alpine
 
 WORKDIR /app
@@ -44,6 +44,6 @@ EXPOSE 3000
 USER avscanner
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:3000/api/v1/live || exit 1
+    CMD node -e "require('http').get('http://localhost:3000/api/v1/live', (r) => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"
 
 CMD ["node", "dist/index.js"]
