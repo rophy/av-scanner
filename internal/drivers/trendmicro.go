@@ -44,6 +44,7 @@ func (d *TrendMicroDriver) RTSWatch(filePath string, opts WatchOptions) (*ScanRe
 	t, err := tail.TailFile(d.config.RTSLogPath, tail.Config{
 		Follow:    true,
 		ReOpen:    true,
+		Poll:      true, // Use polling instead of inotify for shell redirects
 		MustExist: true,
 		Location:  &tail.SeekInfo{Offset: 0, Whence: os.SEEK_END},
 	})

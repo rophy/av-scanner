@@ -80,7 +80,7 @@
           Type=simple
           User=root
           ExecStartPre=/bin/mkdir -p /tmp/quarantine
-          ExecStart=/bin/bash -c 'exec /usr/sbin/clamonacc --foreground --move=/tmp/quarantine 2>&1 | ts "[%%Y-%%m-%%d %%H:%%M:%%S]" >> /var/log/clamav/clamonacc.log'
+          ExecStart=/bin/bash -c 'exec /usr/sbin/clamonacc --foreground --move=/tmp/quarantine 2>&1 | stdbuf -oL ts "[%%Y-%%m-%%d %%H:%%M:%%S]" >> /var/log/clamav/clamonacc.log'
           Restart=on-failure
           RestartSec=5
 
