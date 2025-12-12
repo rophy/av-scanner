@@ -1,0 +1,40 @@
+version: '3.8'
+
+# Both ClamAV and Trend Micro DS Agent run on the HOST machine.
+# The scanner service mounts their log files and binaries.
+#
+# Interface for both engines:
+# - RTS Log file: monitored for real-time scan results
+# - Scan binary: executed for manual scans
+#
+# Usage:
+#   AV_ENGINE=clamav docker compose up      # Use ClamAV
+#   AV_ENGINE=trendmicro docker compose up  # Use Trend Micro
+
+services:
+  av-scanner:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      - NODE_ENV=${NODE_ENV:-production}
+      - AV_ENGINE=${AV_ENGINE:-clamav}
+      # ClamAV config
+      - CLAMAV_RTS_ENABLED=${CLAMAV_RTS_ENABLED:-false}
+      - CLAMAV_RTS_LOG_PATH=/var/log/clamav/clamonacc.log
+      - CLAMAV_SCAN_BINARY_PATH=/usr/bin/clamdscan
+      # Trend Micro config
+      - TM_RTS_LOG_PATH=/var/log/ds_agent/ds_agent.log
+      - TM_SCAN_BINARY_PATH=/opt/ds_agent/dsa_scan
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+    volumes:
+      # ClamAV: log + binary
+      - /var/log/clamav:/var/log/clamav:ro
+      - /usr/bin:/usr/bin:ro
+      # Trend Micro: log + binary
+      - /var/log/ds_agent:/var/log/ds_agent:ro
+      - /opt/ds_agent:/opt/ds_agent:ro
+      # Shared scan directory (must be on host for RTS to work)
+      - ${SCAN_DIR:-/tmp/av-scanner}:/tmp/av-scanner
