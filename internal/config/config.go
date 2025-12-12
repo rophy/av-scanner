@@ -14,9 +14,10 @@ const (
 )
 
 type DriverConfig struct {
-	Engine     EngineType
-	RTSLogPath string
-	Timeout    int // milliseconds
+	Engine         EngineType
+	RTSLogPath     string
+	ScanBinaryPath string
+	Timeout        int // milliseconds
 }
 
 type Config struct {
@@ -39,14 +40,16 @@ func Load() (*Config, error) {
 		LogLevel:     getEnv("LOG_LEVEL", "info"),
 		Drivers: map[EngineType]DriverConfig{
 			EngineClamAV: {
-				Engine:     EngineClamAV,
-				RTSLogPath: getEnv("CLAMAV_RTS_LOG_PATH", "/var/log/clamav/clamonacc.log"),
-				Timeout:    getEnvInt("CLAMAV_TIMEOUT", 15000),
+				Engine:         EngineClamAV,
+				RTSLogPath:     getEnv("CLAMAV_RTS_LOG_PATH", "/var/log/clamav/clamonacc.log"),
+				ScanBinaryPath: getEnv("CLAMAV_SCAN_BINARY", "/usr/bin/clamdscan"),
+				Timeout:        getEnvInt("CLAMAV_TIMEOUT", 15000),
 			},
 			EngineTrendMicro: {
-				Engine:     EngineTrendMicro,
-				RTSLogPath: getEnv("TM_RTS_LOG_PATH", "/var/log/ds_agent/ds_agent.log"),
-				Timeout:    getEnvInt("TM_TIMEOUT", 15000),
+				Engine:         EngineTrendMicro,
+				RTSLogPath:     getEnv("TM_RTS_LOG_PATH", "/var/log/ds_agent/ds_agent.log"),
+				ScanBinaryPath: getEnv("TM_SCAN_BINARY", "/opt/ds_agent/dsa_scan"),
+				Timeout:        getEnvInt("TM_TIMEOUT", 15000),
 			},
 		},
 	}

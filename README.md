@@ -4,35 +4,58 @@ A unified antivirus scanning service that supports multiple AV engines (ClamAV a
 
 ## Architecture
 
-Both ClamAV and Trend Micro DS Agent run on a **dedicated Ubuntu VM**. Both engines use **real-time scanning (RTS)** via log file monitoring:
+Both ClamAV and Trend Micro DS Agent run on a **dedicated Ubuntu VM**. The scanner uses a **hybrid approach** combining real-time scanning (RTS) and on-demand scanning for reliability:
 
 | Component | ClamAV | Trend Micro DS Agent |
 |-----------|--------|----------------------|
-| **RTS Log File** | `/var/log/clamav/clamonacc.log` | `/var/log/ds_agent/ds_agent.log` |
+| **RTS Log** | `/var/log/clamav/clamonacc.log` | `/var/log/ds_agent/ds_agent.log` |
+| **On-demand Binary** | `clamdscan` | `dsa_scan` |
 
 ```mermaid
 flowchart TB
     subgraph VM["Scanning VM (Ubuntu)"]
         subgraph engines["AV Engines"]
-            clamav["ClamAV<br/>clamonacc (on-access)<br/>Log: clamonacc.log"]
-            trendmicro["Trend Micro DS Agent<br/>ds_agent (on-access)<br/>Log: ds_agent.log"]
+            clamav["ClamAV<br/>clamonacc (RTS) + clamdscan (on-demand)"]
+            trendmicro["Trend Micro DS Agent<br/>ds_agent (RTS) + dsa_scan (on-demand)"]
         end
 
         subgraph scanner["AV Scanner Service (systemd)"]
-            monitor["Monitors RTS log file"]
-            scandir["Scan directory: /tmp/av-scanner"]
+            upload["1. File uploaded to /tmp/av-scanner"]
+            delay["2. Brief delay (50ms + 10ms/MB)"]
+            rtscheck1["3. Check RTS cache"]
+            ondemand["4. On-demand scan (if RTS miss)"]
+            rtscheck2["5. Check RTS cache again"]
+            result["6. Return result"]
         end
 
-        clamav --> monitor
-        trendmicro --> monitor
+        upload --> delay --> rtscheck1
+        rtscheck1 -->|hit| result
+        rtscheck1 -->|miss| ondemand --> rtscheck2 --> result
+        clamav --> rtscheck1
+        clamav --> rtscheck2
     end
 ```
 
+## Scan Flow
+
+1. **File uploaded** to scan directory
+2. **Brief delay** (50ms base + 10ms per MB) to allow RTS detection
+3. **Check RTS cache** - if infected, return immediately (fast path)
+4. **On-demand scan** - run `clamdscan`/`dsa_scan` if RTS didn't catch it
+5. **Check RTS cache again** - catches race condition where RTS detected during on-demand scan
+6. **Return result** - infected if either RTS or on-demand detected, clean only if both clear
+
+This hybrid approach ensures:
+- **Fast detection** (~50ms) when RTS catches the file
+- **Reliable detection** via on-demand scan as fallback
+- **No false negatives** from race conditions
+
 ## Features
 
-- **Unified interface**: Both engines use the same pattern (RTS log file monitoring)
+- **Hybrid scanning**: Combines RTS (fast) and on-demand (reliable) scanning
+- **Unified interface**: Both engines use the same Driver interface
 - **Isolated VM**: AV engines run in a dedicated Ubuntu VM
-- **RTS-only architecture**: Monitors RTS log for real-time scan results
+- **Race condition handling**: Checks RTS cache before and after on-demand scan
 - **Ephemeral file handling**: Files are deleted immediately after scanning
 - **Native systemd integration**: Runs as a native binary via systemd
 
@@ -157,8 +180,10 @@ multipass purge
 | `MAX_FILE_SIZE` | 104857600 | Max upload size in bytes (100MB) |
 | `LOG_LEVEL` | info | Log level |
 | `CLAMAV_RTS_LOG_PATH` | /var/log/clamav/clamonacc.log | ClamAV RTS log file |
+| `CLAMAV_SCAN_BINARY` | /usr/bin/clamdscan | ClamAV on-demand scan binary |
 | `CLAMAV_TIMEOUT` | 15000 | ClamAV scan timeout in ms |
 | `TM_RTS_LOG_PATH` | /var/log/ds_agent/ds_agent.log | DS Agent RTS log file |
+| `TM_SCAN_BINARY` | /opt/ds_agent/dsa_scan | DS Agent on-demand scan binary |
 | `TM_TIMEOUT` | 15000 | DS Agent scan timeout in ms |
 
 To change configuration, edit the systemd service file on the VM:
@@ -178,15 +203,26 @@ Upload and scan a file.
 curl -X POST -F "file=@testfile.txt" http://<VM_IP>:3000/api/v1/scan
 ```
 
-**Response:**
+**Response (clean file):**
 ```json
 {
   "fileId": "550e8400-e29b-41d4-a716-446655440000",
   "fileName": "testfile.txt",
   "status": "clean",
   "engine": "clamav",
-  "signature": null,
-  "duration": 150
+  "duration": 65
+}
+```
+
+**Response (infected file):**
+```json
+{
+  "fileId": "550e8400-e29b-41d4-a716-446655440000",
+  "fileName": "eicar.com",
+  "status": "infected",
+  "engine": "clamav",
+  "signature": "Win.Test.EICAR_HDB-1",
+  "duration": 51
 }
 ```
 

@@ -66,6 +66,7 @@ type Driver interface {
 	Start() error
 	Stop()
 	RTSWatch(filePath string, opts WatchOptions) (*ScanResult, error)
+	ManualScan(filePath string) (*ScanResult, error)
 	CheckHealth() (*EngineHealth, error)
 	GetInfo() EngineInfo
 }

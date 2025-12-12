@@ -1,11 +1,14 @@
 package drivers
 
 import (
+	"bytes"
 	"context"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/nxadm/tail"
@@ -13,11 +16,8 @@ import (
 	"github.com/rophy/av-scanner/internal/config"
 )
 
-var (
-	// Regex patterns support optional timestamp prefix: [YYYY-MM-DD HH:MM:SS]
-	clamavFoundRegex = regexp.MustCompile(`(?:\[[\d-]+\s[\d:]+\]\s)?(.+):\s+(.+)\s+FOUND$`)
-	clamavMovedRegex = regexp.MustCompile(`(?:\[[\d-]+\s[\d:]+\]\s)?(.+):\s+moved to '(.+)'$`)
-)
+// Matches: /path/to/file: Signature FOUND
+var clamavFoundRegex = regexp.MustCompile(`(.+):\s+(.+)\s+FOUND$`)
 
 type ClamAVDriver struct {
 	config config.DriverConfig
@@ -83,7 +83,6 @@ func (d *ClamAVDriver) watchLog() {
 }
 
 func (d *ClamAVDriver) processLogLine(line string) {
-	// Check for FOUND (infected)
 	if matches := clamavFoundRegex.FindStringSubmatch(line); matches != nil {
 		absPath, err := filepath.Abs(matches[1])
 		if err != nil {
@@ -97,23 +96,6 @@ func (d *ClamAVDriver) processLogLine(line string) {
 			Raw:       line,
 		})
 		d.logger.Debug("Cached detection", "path", absPath, "signature", matches[2])
-		return
-	}
-
-	// Check for moved (infected, after quarantine)
-	if matches := clamavMovedRegex.FindStringSubmatch(line); matches != nil {
-		absPath, err := filepath.Abs(matches[1])
-		if err != nil {
-			absPath = matches[1]
-		}
-
-		d.cache.Add(absPath, &cache.Detection{
-			FilePath:  matches[1],
-			Status:    "infected",
-			Signature: "",
-			Raw:       line,
-		})
-		d.logger.Debug("Cached quarantine", "path", absPath)
 	}
 }
 
@@ -172,6 +154,70 @@ func (d *ClamAVDriver) RTSWatch(filePath string, opts WatchOptions) (*ScanResult
 	}
 }
 
+func (d *ClamAVDriver) ManualScan(filePath string) (*ScanResult, error) {
+	startTime := time.Now()
+	fileID := filepath.Base(filePath)
+
+	// clamdscan --fdpass --stdout --no-summary <file>
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(d.config.Timeout)*time.Millisecond)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, d.config.ScanBinaryPath, "--fdpass", "--stdout", "--no-summary", filePath)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	exitCode := 0
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		} else if ctx.Err() == context.DeadlineExceeded {
+			return nil, ctx.Err()
+		} else {
+			return nil, err
+		}
+	}
+
+	output := strings.TrimSpace(stdout.String())
+	d.logger.Debug("Manual scan completed", "exitCode", exitCode, "output", output)
+
+	// Parse output for signature
+	var status ScanStatus
+	var signature string
+
+	if matches := clamavFoundRegex.FindStringSubmatch(output); matches != nil {
+		status = StatusInfected
+		signature = matches[2]
+	} else {
+		// Exit codes: 0 = clean, 1 = virus found, 2+ = error
+		switch exitCode {
+		case 0:
+			status = StatusClean
+		case 1:
+			status = StatusInfected
+		default:
+			status = StatusError
+		}
+	}
+
+	return &ScanResult{
+		Status:    status,
+		Engine:    d.Engine(),
+		Signature: signature,
+		Phase:     PhaseManual,
+		FilePath:  filePath,
+		FileID:    fileID,
+		Timestamp: time.Now(),
+		Duration:  time.Since(startTime).Milliseconds(),
+		Raw: map[string]interface{}{
+			"exitCode": exitCode,
+			"stdout":   output,
+			"stderr":   stderr.String(),
+		},
+	}, nil
+}
+
 func (d *ClamAVDriver) CheckHealth() (*EngineHealth, error) {
 	health := &EngineHealth{
 		Engine:    d.Engine(),
@@ -193,6 +239,6 @@ func (d *ClamAVDriver) GetInfo() EngineInfo {
 		Engine:              d.Engine(),
 		Available:           true,
 		RTSEnabled:          true,
-		ManualScanAvailable: false,
+		ManualScanAvailable: true,
 	}
 }

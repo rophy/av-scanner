@@ -1,11 +1,15 @@
 package drivers
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/nxadm/tail"
@@ -173,6 +177,98 @@ func (d *TrendMicroDriver) RTSWatch(filePath string, opts WatchOptions) (*ScanRe
 	}
 }
 
+func (d *TrendMicroDriver) ManualScan(filePath string) (*ScanResult, error) {
+	startTime := time.Now()
+	fileID := filepath.Base(filePath)
+
+	// dsa_scan --target <file> --json
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(d.config.Timeout)*time.Millisecond)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, d.config.ScanBinaryPath, "--target", filePath, "--json")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	exitCode := 0
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		} else if ctx.Err() == context.DeadlineExceeded {
+			return nil, ctx.Err()
+		} else {
+			return nil, err
+		}
+	}
+
+	output := stdout.String()
+	d.logger.Debug("Manual scan completed", "exitCode", exitCode, "output", output)
+
+	status, signature := d.parseManualScanOutput(output, exitCode)
+
+	return &ScanResult{
+		Status:    status,
+		Engine:    d.Engine(),
+		Signature: signature,
+		Phase:     PhaseManual,
+		FilePath:  filePath,
+		FileID:    fileID,
+		Timestamp: time.Now(),
+		Duration:  time.Since(startTime).Milliseconds(),
+		Raw: map[string]interface{}{
+			"exitCode": exitCode,
+			"stdout":   output,
+			"stderr":   stderr.String(),
+		},
+	}, nil
+}
+
+func (d *TrendMicroDriver) parseManualScanOutput(output string, exitCode int) (ScanStatus, string) {
+	// Try JSON parsing first
+	var jsonResult struct {
+		Infected    bool   `json:"infected"`
+		Status      string `json:"status"`
+		Signature   string `json:"signature"`
+		MalwareName string `json:"malware_name"`
+		Threats     []struct {
+			Name string `json:"name"`
+		} `json:"threats"`
+	}
+
+	if err := json.Unmarshal([]byte(output), &jsonResult); err == nil {
+		infected := jsonResult.Infected ||
+			jsonResult.Status == "infected" ||
+			len(jsonResult.Threats) > 0
+
+		signature := jsonResult.Signature
+		if signature == "" && jsonResult.MalwareName != "" {
+			signature = jsonResult.MalwareName
+		}
+		if signature == "" && len(jsonResult.Threats) > 0 {
+			signature = jsonResult.Threats[0].Name
+		}
+
+		if infected {
+			return StatusInfected, signature
+		}
+		return StatusClean, ""
+	}
+
+	// Text-based fallback
+	lowerOutput := strings.ToLower(output)
+	if strings.Contains(lowerOutput, "infected") ||
+		strings.Contains(lowerOutput, "virus") ||
+		strings.Contains(lowerOutput, "malware") {
+		return StatusInfected, ""
+	}
+
+	if exitCode == 0 {
+		return StatusClean, ""
+	}
+	return StatusError, ""
+}
+
 func (d *TrendMicroDriver) CheckHealth() (*EngineHealth, error) {
 	health := &EngineHealth{
 		Engine:    d.Engine(),
@@ -194,6 +290,6 @@ func (d *TrendMicroDriver) GetInfo() EngineInfo {
 		Engine:              d.Engine(),
 		Available:           true,
 		RTSEnabled:          true,
-		ManualScanAvailable: false,
+		ManualScanAvailable: true,
 	}
 }

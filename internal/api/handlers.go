@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"time"
 
 	"github.com/rophy/av-scanner/internal/config"
@@ -83,47 +82,25 @@ func (a *API) handleScan(w http.ResponseWriter, r *http.Request) {
 		"mimeType", header.Header.Get("Content-Type"),
 	)
 
-	// Parse options
-	opts := scanner.ScanOptions{}
-	if timeout := r.URL.Query().Get("rtsTimeout"); timeout != "" {
-		if ms, err := strconv.Atoi(timeout); err == nil {
-			opts.RTSTimeout = time.Duration(ms) * time.Millisecond
-		}
-	}
-
 	// Perform scan
-	result, err := a.scanner.Scan(filePath, fileID, header.Filename, written, opts)
+	result, err := a.scanner.Scan(filePath, fileID, header.Filename, written)
 	if err != nil {
 		a.logger.Error("Scan failed", "error", err, "fileId", fileID)
 		a.jsonError(w, "Scan failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// Return sanitized response
+	// Return response
 	response := map[string]interface{}{
 		"fileId":   result.FileID,
 		"fileName": header.Filename,
 		"status":   result.Status,
 		"engine":   result.Engine,
 		"duration": result.TotalDuration,
-		"phases": map[string]interface{}{
-			"rts": nil,
-		},
 	}
 
 	if result.Signature != "" {
 		response["signature"] = result.Signature
-	}
-
-	if result.RTSResult != nil {
-		rts := map[string]interface{}{
-			"status":   result.RTSResult.Status,
-			"duration": result.RTSResult.Duration,
-		}
-		if result.RTSResult.Signature != "" {
-			rts["signature"] = result.RTSResult.Signature
-		}
-		response["phases"].(map[string]interface{})["rts"] = rts
 	}
 
 	a.jsonResponse(w, response, http.StatusOK)

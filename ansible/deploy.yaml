@@ -79,8 +79,7 @@
           [Service]
           Type=simple
           User=root
-          ExecStartPre=/bin/mkdir -p /tmp/quarantine
-          ExecStart=/usr/sbin/clamonacc --foreground --log=/var/log/clamav/clamonacc.log --move=/tmp/quarantine
+          ExecStart=/usr/sbin/clamonacc --foreground --log=/var/log/clamav/clamonacc.log --remove
           Restart=on-failure
           RestartSec=5
 
