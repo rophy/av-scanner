@@ -1,0 +1,251 @@
+package api
+
+import (
+	"encoding/json"
+	"io"
+	"log/slog"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
+	"time"
+
+	"github.com/rophy/av-scanner/internal/config"
+	"github.com/rophy/av-scanner/internal/scanner"
+)
+
+type API struct {
+	scanner *scanner.Scanner
+	config  *config.Config
+	logger  *slog.Logger
+}
+
+func New(s *scanner.Scanner, cfg *config.Config, logger *slog.Logger) *API {
+	return &API{
+		scanner: s,
+		config:  cfg,
+		logger:  logger,
+	}
+}
+
+func (a *API) Routes() http.Handler {
+	mux := http.NewServeMux()
+
+	// API v1 routes
+	mux.HandleFunc("POST /api/v1/scan", a.handleScan)
+	mux.HandleFunc("GET /api/v1/health", a.handleHealth)
+	mux.HandleFunc("GET /api/v1/engines", a.handleEngines)
+	mux.HandleFunc("GET /api/v1/ready", a.handleReady)
+	mux.HandleFunc("GET /api/v1/live", a.handleLive)
+
+	return a.withLogging(mux)
+}
+
+func (a *API) handleScan(w http.ResponseWriter, r *http.Request) {
+	// Parse multipart form (max file size)
+	if err := r.ParseMultipartForm(a.config.MaxFileSize); err != nil {
+		a.jsonError(w, "File too large or invalid form", http.StatusBadRequest)
+		return
+	}
+
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		a.jsonError(w, "No file provided. Please upload a file using the 'file' field", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	// Generate file ID and path
+	fileID := a.scanner.GenerateFileID()
+	filePath := a.scanner.GetUploadPath(fileID, header.Filename)
+
+	// Save uploaded file
+	dst, err := os.Create(filePath)
+	if err != nil {
+		a.logger.Error("Failed to create file", "error", err)
+		a.jsonError(w, "Failed to save uploaded file", http.StatusInternalServerError)
+		return
+	}
+
+	written, err := io.Copy(dst, file)
+	dst.Close()
+	if err != nil {
+		os.Remove(filePath)
+		a.logger.Error("Failed to write file", "error", err)
+		a.jsonError(w, "Failed to save uploaded file", http.StatusInternalServerError)
+		return
+	}
+
+	a.logger.Info("Received scan request",
+		"fileId", fileID,
+		"originalName", header.Filename,
+		"size", written,
+		"mimeType", header.Header.Get("Content-Type"),
+	)
+
+	// Parse options
+	opts := scanner.ScanOptions{}
+	if timeout := r.URL.Query().Get("rtsTimeout"); timeout != "" {
+		if ms, err := strconv.Atoi(timeout); err == nil {
+			opts.RTSTimeout = time.Duration(ms) * time.Millisecond
+		}
+	}
+
+	// Perform scan
+	result, err := a.scanner.Scan(filePath, fileID, header.Filename, written, opts)
+	if err != nil {
+		a.logger.Error("Scan failed", "error", err, "fileId", fileID)
+		a.jsonError(w, "Scan failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Return sanitized response
+	response := map[string]interface{}{
+		"fileId":   result.FileID,
+		"status":   result.Status,
+		"engine":   result.Engine,
+		"duration": result.TotalDuration,
+		"phases": map[string]interface{}{
+			"rts": nil,
+		},
+	}
+
+	if result.Signature != "" {
+		response["signature"] = result.Signature
+	}
+
+	if result.RTSResult != nil {
+		rts := map[string]interface{}{
+			"status":   result.RTSResult.Status,
+			"duration": result.RTSResult.Duration,
+		}
+		if result.RTSResult.Signature != "" {
+			rts["signature"] = result.RTSResult.Signature
+		}
+		response["phases"].(map[string]interface{})["rts"] = rts
+	}
+
+	a.jsonResponse(w, response, http.StatusOK)
+}
+
+func (a *API) handleHealth(w http.ResponseWriter, r *http.Request) {
+	healthResults := a.scanner.CheckHealth()
+	activeEngine := a.scanner.ActiveEngine()
+
+	activeHealthy := false
+	for _, h := range healthResults {
+		if h.Engine == activeEngine {
+			activeHealthy = h.Healthy
+			break
+		}
+	}
+
+	engines := make([]map[string]interface{}, 0, len(healthResults))
+	for _, h := range healthResults {
+		engine := map[string]interface{}{
+			"engine":    h.Engine,
+			"healthy":   h.Healthy,
+			"lastCheck": h.LastCheck,
+		}
+		if h.Version != "" {
+			engine["version"] = h.Version
+		}
+		if h.Error != "" {
+			engine["error"] = h.Error
+		}
+		engines = append(engines, engine)
+	}
+
+	status := http.StatusOK
+	statusText := "healthy"
+	if !activeHealthy {
+		status = http.StatusServiceUnavailable
+		statusText = "unhealthy"
+	}
+
+	a.jsonResponse(w, map[string]interface{}{
+		"status":       statusText,
+		"activeEngine": activeEngine,
+		"engines":      engines,
+	}, status)
+}
+
+func (a *API) handleEngines(w http.ResponseWriter, r *http.Request) {
+	engines := a.scanner.GetEngineInfo()
+	activeEngine := a.scanner.ActiveEngine()
+
+	engineList := make([]map[string]interface{}, 0, len(engines))
+	for _, e := range engines {
+		engineList = append(engineList, map[string]interface{}{
+			"engine":              e.Engine,
+			"available":           e.Available,
+			"rtsEnabled":          e.RTSEnabled,
+			"manualScanAvailable": e.ManualScanAvailable,
+			"active":              e.Engine == activeEngine,
+		})
+	}
+
+	a.jsonResponse(w, map[string]interface{}{
+		"activeEngine": activeEngine,
+		"engines":      engineList,
+	}, http.StatusOK)
+}
+
+func (a *API) handleReady(w http.ResponseWriter, r *http.Request) {
+	health, err := a.scanner.GetActiveEngineHealth()
+	if err != nil || !health.Healthy {
+		errMsg := "Unknown error"
+		if err != nil {
+			errMsg = err.Error()
+		} else if health.Error != "" {
+			errMsg = health.Error
+		}
+		a.jsonResponse(w, map[string]interface{}{
+			"ready": false,
+			"error": errMsg,
+		}, http.StatusServiceUnavailable)
+		return
+	}
+
+	a.jsonResponse(w, map[string]interface{}{"ready": true}, http.StatusOK)
+}
+
+func (a *API) handleLive(w http.ResponseWriter, r *http.Request) {
+	a.jsonResponse(w, map[string]interface{}{"alive": true}, http.StatusOK)
+}
+
+func (a *API) jsonResponse(w http.ResponseWriter, data interface{}, status int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(data)
+}
+
+func (a *API) jsonError(w http.ResponseWriter, message string, status int) {
+	a.jsonResponse(w, map[string]string{"error": message}, status)
+}
+
+func (a *API) withLogging(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		wrapped := &responseWriter{ResponseWriter: w, status: http.StatusOK}
+
+		next.ServeHTTP(wrapped, r)
+
+		a.logger.Info("Request completed",
+			"method", r.Method,
+			"path", filepath.Clean(r.URL.Path),
+			"status", wrapped.status,
+			"duration", time.Since(start).Milliseconds(),
+		)
+	})
+}
+
+type responseWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (rw *responseWriter) WriteHeader(code int) {
+	rw.status = code
+	rw.ResponseWriter.WriteHeader(code)
+}
