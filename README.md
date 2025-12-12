@@ -256,6 +256,57 @@ curl -X POST -F "file=@/tmp/eicar.com" http://<VM_IP>:3000/api/v1/scan
 # Expected response: status = "infected", signature = "Win.Test.EICAR_HDB-1"
 ```
 
+## Stress Testing with k6
+
+A [k6](https://k6.io/) stress test script is included to verify scan accuracy under load.
+
+### Setup
+
+```bash
+# Install k6
+sudo snap install k6
+```
+
+> **Note:** The test script generates EICAR test content dynamically from character codes to avoid triggering AV software on developer machines.
+
+### Run Stress Test
+
+```bash
+# Default: 10 VUs for 30 seconds
+k6 run k6-stress-test.js
+
+# Custom API URL
+k6 run -e API_URL=http://192.168.1.100:3000 k6-stress-test.js
+
+# Higher load: 50 VUs for 60 seconds
+k6 run --vus 50 --duration 60s k6-stress-test.js
+```
+
+### Test Behavior
+
+- **80% clean files / 20% infected files** (EICAR)
+- Verifies **100% correct scan results** (clean→"clean", infected→"infected")
+- Reports any mismatches as failures
+
+### Example Output
+
+```
+========== STRESS TEST SUMMARY ==========
+Total requests:    3240
+Clean files:       2553 (78.8%)
+Infected files:    687 (21.2%)
+Correct results:   100.00%
+Scan errors:       0
+Avg scan duration: 88.1ms
+==========================================
+```
+
+### Thresholds
+
+The test enforces:
+- `correct_results`: Must be 100% (all scan results match expected)
+- `http_req_failed`: Must be <1% (minimal HTTP errors)
+
 ## License
 
 MIT
