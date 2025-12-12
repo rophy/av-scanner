@@ -4,48 +4,37 @@ A unified antivirus scanning service that supports multiple AV engines (ClamAV a
 
 ## Architecture
 
-Both ClamAV and Trend Micro DS Agent run on a **dedicated Ubuntu VM**. Both engines share the **same interface**:
+Both ClamAV and Trend Micro DS Agent run on a **dedicated Ubuntu VM**. Both engines use **real-time scanning (RTS)** via log file monitoring:
 
 | Component | ClamAV | Trend Micro DS Agent |
 |-----------|--------|----------------------|
 | **RTS Log File** | `/var/log/clamav/clamonacc.log` | `/var/log/ds_agent/ds_agent.log` |
-| **Scan Binary** | `/usr/bin/clamdscan` | `/opt/ds_agent/dsa_scan` |
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                   SCANNING VM (Ubuntu)                      │
-│                                                             │
-│  ┌─────────────────┐         ┌─────────────────────────┐   │
-│  │    ClamAV       │         │  Trend Micro DS Agent   │   │
-│  │                 │         │                         │   │
-│  │  Log file:      │         │  Log file:              │   │
-│  │  clamonacc.log  │         │  ds_agent.log           │   │
-│  │                 │         │                         │   │
-│  │  Binary:        │         │  Binary:                │   │
-│  │  clamdscan      │         │  dsa_scan               │   │
-│  └────────┬────────┘         └────────────┬────────────┘   │
-│           │                               │                 │
-│           └───────────┬───────────────────┘                 │
-│                       │                                     │
-│  ┌────────────────────▼────────────────────────────────┐   │
-│  │         AV Scanner Service (Podman + Quadlet)        │   │
-│  │                                                      │   │
-│  │  - RTS log file (monitors for scan results)          │   │
-│  │  - Scan binary (executes for manual scans)           │   │
-│  │  - Shared scan directory (/tmp/av-scanner)           │   │
-│  └──────────────────────────────────────────────────────┘   │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph VM["Scanning VM (Ubuntu)"]
+        subgraph engines["AV Engines"]
+            clamav["ClamAV<br/>clamonacc (on-access)<br/>Log: clamonacc.log"]
+            trendmicro["Trend Micro DS Agent<br/>ds_agent (on-access)<br/>Log: ds_agent.log"]
+        end
+
+        subgraph scanner["AV Scanner Service (systemd)"]
+            monitor["Monitors RTS log file"]
+            scandir["Scan directory: /tmp/av-scanner"]
+        end
+
+        clamav --> monitor
+        trendmicro --> monitor
+    end
 ```
 
 ## Features
 
-- **Unified interface**: Both engines use the same pattern (log file + binary)
+- **Unified interface**: Both engines use the same pattern (RTS log file monitoring)
 - **Isolated VM**: AV engines run in a dedicated Ubuntu VM
-- **RTS-first architecture**: Monitors RTS log for real-time scan results
-- **Manual scan support**: Executes scan binary for on-demand scanning
+- **RTS-only architecture**: Monitors RTS log for real-time scan results
 - **Ephemeral file handling**: Files are deleted immediately after scanning
-- **Systemd integration**: Container managed via Podman Quadlet
+- **Native systemd integration**: Runs as a native binary via systemd
 
 ## Quick Start
 
@@ -88,13 +77,14 @@ make deploy
 ```
 
 The `make deploy` command will:
-1. Build the Docker image locally
+1. Build the Docker image locally (contains Go binary)
 2. Save it to a tarball
 3. Transfer the image to the VM via Ansible
-4. Load the image into Podman on the VM
-5. Create a Quadlet systemd service
-6. Start and enable the service
-7. Wait for health check to pass
+4. Extract the binary from the image using Podman
+5. Install the binary to `/usr/local/bin/av-scanner`
+6. Create a systemd service
+7. Start and enable the service
+8. Wait for health check to pass
 
 ### 4. Access the Scanner API
 
@@ -115,11 +105,12 @@ curl -X POST -F "file=@testfile.txt" http://<VM_IP>:3000/api/v1/scan
 |--------|-------------|
 | `make build` | Build the Docker image locally |
 | `make deploy` | Build, save, and deploy image to VM |
+| `make test` | Upload EICAR test file to VM and verify detection |
 | `make clean` | Remove local image and tarball |
 
 ## Service Management
 
-The scanner runs as a systemd service via Podman Quadlet:
+The scanner runs as a native systemd service:
 
 ```bash
 # SSH into VM
@@ -160,17 +151,20 @@ multipass purge
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `PORT` | 3000 | HTTP server port |
 | `AV_ENGINE` | clamav | Active engine (clamav/trendmicro) |
 | `UPLOAD_DIR` | /tmp/av-scanner | Shared scan directory |
+| `MAX_FILE_SIZE` | 104857600 | Max upload size in bytes (100MB) |
+| `LOG_LEVEL` | info | Log level |
 | `CLAMAV_RTS_LOG_PATH` | /var/log/clamav/clamonacc.log | ClamAV RTS log file |
-| `CLAMAV_SCAN_BINARY_PATH` | /usr/bin/clamdscan | ClamAV scan binary |
+| `CLAMAV_TIMEOUT` | 15000 | ClamAV scan timeout in ms |
 | `TM_RTS_LOG_PATH` | /var/log/ds_agent/ds_agent.log | DS Agent RTS log file |
-| `TM_SCAN_BINARY_PATH` | /opt/ds_agent/dsa_scan | DS Agent scan binary |
+| `TM_TIMEOUT` | 15000 | DS Agent scan timeout in ms |
 
-To change configuration, edit the Quadlet file on the VM:
+To change configuration, edit the systemd service file on the VM:
 
 ```bash
-sudo vi /etc/containers/systemd/av-scanner.container
+sudo vi /etc/systemd/system/av-scanner.service
 sudo systemctl daemon-reload
 sudo systemctl restart av-scanner
 ```
@@ -188,6 +182,7 @@ curl -X POST -F "file=@testfile.txt" http://<VM_IP>:3000/api/v1/scan
 ```json
 {
   "fileId": "550e8400-e29b-41d4-a716-446655440000",
+  "fileName": "testfile.txt",
   "status": "clean",
   "engine": "clamav",
   "signature": null,
@@ -201,17 +196,24 @@ Health check for all engines.
 ### GET /api/v1/engines
 List available engines.
 
+### GET /api/v1/ready
+Readiness probe (checks active engine health).
+
+### GET /api/v1/live
+Liveness probe.
+
 ## Testing with EICAR
 
-The EICAR test file must contain the exact 68-byte signature with no extra content.
+```bash
+# Run the EICAR test via Makefile
+make test
+```
+
+Or manually:
 
 ```bash
 # Download official EICAR test file
 curl -s https://secure.eicar.org/eicar.com -o /tmp/eicar.com
-
-# Test manual scan (inside VM)
-multipass exec av-scanner -- clamdscan /tmp/eicar.com
-# Expected: Win.Test.EICAR_HDB-1 FOUND
 
 # Test via API
 curl -X POST -F "file=@/tmp/eicar.com" http://<VM_IP>:3000/api/v1/scan
