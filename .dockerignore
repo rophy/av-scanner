@@ -1,7 +1,6 @@
 venv/
 *.tar
 .git/
-deploy/
 ansible/
 README.md
 Makefile
