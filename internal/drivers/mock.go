@@ -11,19 +11,13 @@ import (
 
 const EICARSignature = "EICAR-Test-File"
 
-// EICAR test pattern as character codes to avoid triggering AV software
+// EICARPattern returns the EICAR test string.
+// The pattern is stored with 'O' replaced by 'x' to avoid AV detection of source files.
 // https://en.wikipedia.org/wiki/EICAR_test_file
-var eicarCodes = []byte{
-	88, 53, 79, 33, 80, 37, 64, 65, 80, 91, 52, 92, 80, 90, 88, 53,
-	52, 40, 80, 94, 41, 55, 67, 67, 41, 55, 125, 36, 69, 73, 67, 65,
-	82, 45, 83, 84, 65, 78, 68, 65, 82, 68, 45, 65, 78, 84, 73, 86,
-	73, 82, 85, 83, 45, 84, 69, 83, 84, 45, 70, 73, 76, 69, 33, 36,
-	72, 43, 72, 42,
-}
-
-// EICARPattern returns the EICAR test string constructed from character codes
 func EICARPattern() string {
-	return string(eicarCodes)
+	// 'O' at position 2 replaced with 'x'
+	broken := "X5x!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
+	return strings.Replace(broken, "x", "O", 1)
 }
 
 // MockDriver implements Driver interface for testing purposes.

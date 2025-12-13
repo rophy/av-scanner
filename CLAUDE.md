@@ -41,14 +41,15 @@ This project uses **podman** (not docker) for:
 
 ## EICAR Test String
 
-**NEVER** store the EICAR test string directly in source files - it will trigger local AV scanners.
+**NEVER** store the EICAR test string directly in source files - it will trigger local AV scanners (including TrendMicro which detects base64-encoded EICAR).
 
-Use base64 encoding instead:
+Store with one character replaced, fix at runtime:
 ```go
-eicarB64 := "WDVPIVAlQEFQWzRcUFpYNTQoUF4pN0NDKTd9JEVJQ0FSLVNUQU5EQVJELUFOVElWSVJVUy1URVNULUZJTEUhJEgrSCo="
-eicar, _ := base64.StdEncoding.DecodeString(eicarB64)
+// 'O' at position 2 replaced with 'x'
+broken := "X5x!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
+eicar := strings.Replace(broken, "x", "O", 1)
 ```
 
 ```bash
-echo "WDVPIVAlQEFQWzRcUFpYNTQoUF4pN0NDKTd9JEVJQ0FSLVNUQU5EQVJELUFOVElWSVJVUy1URVNULUZJTEUhJEgrSCo=" | base64 -d
+echo 'X5x!P%@AP[4\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*' | sed 's/x/O/'
 ```

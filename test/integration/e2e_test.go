@@ -3,7 +3,6 @@
 package integration
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -56,11 +55,11 @@ func TestScanCleanFile(t *testing.T) {
 }
 
 func TestScanEicar(t *testing.T) {
-	// EICAR test string encoded in base64 to avoid triggering local AV
-	eicarB64 := "WDVPIVAlQEFQWzRcUFpYNTQoUF4pN0NDKTd9JEVJQ0FSLVNUQU5EQVJELUFOVElWSVJVUy1URVNULUZJTEUhJEgrSCo="
-	eicar, _ := base64.StdEncoding.DecodeString(eicarB64)
+	// EICAR test string with 'O' replaced by 'x' to avoid triggering local AV
+	broken := "X5x!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
+	eicar := strings.Replace(broken, "x", "O", 1)
 
-	resp := uploadFile(t, string(eicar), "eicar.com")
+	resp := uploadFile(t, eicar, "eicar.com")
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {

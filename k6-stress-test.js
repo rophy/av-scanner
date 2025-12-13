@@ -24,15 +24,11 @@ export const options = {
   },
 };
 
-// Generate EICAR test string dynamically from char codes
-// This avoids storing the literal string which could trigger AV on dev machines
+// Generate EICAR test string with 'O' replaced by 'x' to avoid AV detection
+// https://en.wikipedia.org/wiki/EICAR_test_file
 function generateEicar() {
-  const codes = [
-    88,53,79,33,80,37,64,65,80,91,52,92,80,90,88,53,52,40,80,94,41,55,67,67,41,55,125,36,
-    69,73,67,65,82,45,83,84,65,78,68,65,82,68,45,65,78,84,73,86,73,82,85,83,45,84,69,83,84,
-    45,70,73,76,69,33,36,72,43,72,42
-  ];
-  return String.fromCharCode(...codes);
+  const broken = 'X5x!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*';
+  return broken.replace('x', 'O');
 }
 
 // Test file contents
