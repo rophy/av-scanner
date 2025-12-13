@@ -82,9 +82,9 @@ setup-vm:
 # Build
 # ============================================
 
-# Build the Docker image (contains Go binary)
+# Build the container image (contains Go binary)
 build:
-	docker build -t $(IMAGE_NAME):$(IMAGE_TAG) .
+	podman build -t $(IMAGE_NAME):$(IMAGE_TAG) .
 
 # Push image to VM registry
 push: build
@@ -96,8 +96,7 @@ push: build
 		REGISTRY=localhost:$$REGISTRY_PORT; \
 	fi && \
 	echo "Pushing to $$REGISTRY..." && \
-	docker tag $(IMAGE_NAME):$(IMAGE_TAG) $$REGISTRY/$(IMAGE_NAME):$(IMAGE_TAG) && \
-	docker push $$REGISTRY/$(IMAGE_NAME):$(IMAGE_TAG)
+	podman push --tls-verify=false $(IMAGE_NAME):$(IMAGE_TAG) $$REGISTRY/$(IMAGE_NAME):$(IMAGE_TAG)
 
 # ============================================
 # Deploy
@@ -125,7 +124,7 @@ deploy: push
 
 # Clean up build artifacts
 clean:
-	docker rmi $(IMAGE_NAME):$(IMAGE_TAG) 2>/dev/null || true
+	podman rmi $(IMAGE_NAME):$(IMAGE_TAG) 2>/dev/null || true
 
 # ============================================
 # Testing
