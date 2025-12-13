@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/rophy/av-scanner/internal/config"
+	"github.com/rophy/av-scanner/internal/metrics"
 	"github.com/rophy/av-scanner/internal/scanner"
 )
 
@@ -37,7 +38,10 @@ func (a *API) Routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/ready", a.handleReady)
 	mux.HandleFunc("GET /api/v1/live", a.handleLive)
 
-	return a.withLogging(mux)
+	// Prometheus metrics endpoint
+	mux.Handle("GET /metrics", metrics.Handler())
+
+	return metrics.Middleware(a.withLogging(mux))
 }
 
 func (a *API) handleScan(w http.ResponseWriter, r *http.Request) {
@@ -86,6 +90,7 @@ func (a *API) handleScan(w http.ResponseWriter, r *http.Request) {
 	result, err := a.scanner.Scan(filePath, fileID, header.Filename, written)
 	if err != nil {
 		a.logger.Error("Scan failed", "error", err, "fileId", fileID)
+		metrics.RecordScan(string(a.config.ActiveEngine), "error")
 		a.jsonError(w, "Scan failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}

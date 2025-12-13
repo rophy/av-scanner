@@ -1,4 +1,4 @@
-.PHONY: help build push deploy clean test vm-init vm-start vm-stop setup-vm
+.PHONY: help build push deploy clean test-unit test-integration vm-init vm-start vm-stop setup-vm
 
 IMAGE_NAME ?= av-scanner
 IMAGE_TAG ?= latest
@@ -22,9 +22,8 @@ help:
 	@echo "  clean      Remove local Docker image"
 	@echo ""
 	@echo "Testing:"
-	@echo "  test       Upload EICAR test file to VM and verify detection"
-	@echo "  test-unit  Run unit tests"
-	@echo "  test-mock  Test locally with mock driver"
+	@echo "  test-unit        Run unit tests"
+	@echo "  test-integration Run integration tests (requires API_URL or VM)"
 
 # ============================================
 # VM Management
@@ -130,39 +129,22 @@ clean:
 # Testing
 # ============================================
 
-# EICAR test string (base64 encoded to avoid shell escaping issues)
-EICAR_B64 := WDVPIVAlQEFQWzRcUFpYNTQoUF4pN0NDKTd9JEVJQ0FSLVNUQU5EQVJELUFOVElWSVJVUy1URVNULUZJTEUhJEgrSCo=
-
-# Test EICAR detection on VM
-test:
-	@if [ ! -f $(STATE_FILE) ]; then echo "Run 'make vm-init' first"; exit 1; fi
-	@. ./$(STATE_FILE); \
-	if [ "$$HYPERVISOR" = "multipass" ]; then \
-		API_URL="http://$$VM_IP:3000"; \
-	else \
-		API_URL="http://localhost:$$API_PORT"; \
-	fi; \
-	echo "Testing EICAR detection on $$API_URL..."; \
-	echo "$(EICAR_B64)" | base64 -d > /tmp/eicar-test.com; \
-	curl -s -X POST -F "file=@/tmp/eicar-test.com" "$$API_URL/api/v1/scan" | jq .; \
-	rm -f /tmp/eicar-test.com
-
 # Run unit tests
 test-unit:
 	go test -race ./...
 
-# Test locally with mock driver
-test-mock:
-	@mkdir -p /tmp/av-scanner-test
-	@echo "Starting server with mock driver on port 3333..."
-	@AV_ENGINE=mock UPLOAD_DIR=/tmp/av-scanner-test PORT=3333 go run . & \
-	PID=$$!; \
-	sleep 1; \
-	echo "Testing clean file..."; \
-	echo "clean content" > /tmp/clean-test.txt; \
-	curl -s -X POST -F "file=@/tmp/clean-test.txt" "http://localhost:3333/api/v1/scan" | jq .; \
-	echo "Testing EICAR detection..."; \
-	echo "$(EICAR_B64)" | base64 -d > /tmp/eicar-test.com; \
-	curl -s -X POST -F "file=@/tmp/eicar-test.com" "http://localhost:3333/api/v1/scan" | jq .; \
-	rm -f /tmp/clean-test.txt /tmp/eicar-test.com; \
-	kill $$PID 2>/dev/null || true
+# Run integration tests (requires running server)
+test-integration:
+	@if [ -n "$(API_URL)" ]; then \
+		API_URL=$(API_URL) go test -tags=integration ./test/integration/... -v; \
+	elif [ -f $(STATE_FILE) ]; then \
+		. ./$(STATE_FILE); \
+		if [ "$$HYPERVISOR" = "multipass" ]; then \
+			API_URL="http://$$VM_IP:3000" go test -tags=integration ./test/integration/... -v; \
+		else \
+			API_URL="http://localhost:$$API_PORT" go test -tags=integration ./test/integration/... -v; \
+		fi; \
+	else \
+		echo "Set API_URL or run 'make vm-init' first"; exit 1; \
+	fi
+

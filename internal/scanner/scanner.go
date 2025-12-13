@@ -11,6 +11,7 @@ import (
 	"github.com/rophy/av-scanner/internal/cache"
 	"github.com/rophy/av-scanner/internal/config"
 	"github.com/rophy/av-scanner/internal/drivers"
+	"github.com/rophy/av-scanner/internal/metrics"
 )
 
 type ScanResponse struct {
@@ -148,6 +149,9 @@ func (s *Scanner) Scan(filePath, fileID, originalName string, size int64) (*Scan
 		"status", response.Status,
 		"duration", response.TotalDuration,
 	)
+
+	// Record metrics
+	metrics.RecordScan(string(driver.Engine()), string(response.Status))
 
 	return response, nil
 }
