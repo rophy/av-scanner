@@ -43,39 +43,42 @@ func New(cfg *config.Config, logger *slog.Logger) *Scanner {
 		detectionCache: detectionCache,
 	}
 
-	// Initialize drivers with shared cache
-	s.drivers[config.EngineClamAV] = drivers.NewClamAVDriver(
-		cfg.Drivers[config.EngineClamAV],
-		logger,
-		detectionCache,
-	)
-	s.drivers[config.EngineTrendMicro] = drivers.NewTrendMicroDriver(
-		cfg.Drivers[config.EngineTrendMicro],
-		logger,
-		detectionCache,
-	)
-	s.drivers[config.EngineMock] = drivers.NewMockDriver(
-		config.DriverConfig{Engine: config.EngineMock},
-	)
+	// Initialize only the active driver
+	switch cfg.ActiveEngine {
+	case config.EngineClamAV:
+		s.drivers[config.EngineClamAV] = drivers.NewClamAVDriver(
+			cfg.Drivers[config.EngineClamAV],
+			logger,
+			detectionCache,
+		)
+	case config.EngineTrendMicro:
+		s.drivers[config.EngineTrendMicro] = drivers.NewTrendMicroDriver(
+			cfg.Drivers[config.EngineTrendMicro],
+			logger,
+			detectionCache,
+		)
+	case config.EngineMock:
+		s.drivers[config.EngineMock] = drivers.NewMockDriver(
+			config.DriverConfig{Engine: config.EngineMock},
+		)
+	}
 
 	return s
 }
 
-// Start starts all driver background watchers
+// Start starts the active driver's background watcher
 func (s *Scanner) Start() error {
-	for engine, driver := range s.drivers {
-		if err := driver.Start(); err != nil {
-			s.logger.Error("Failed to start driver", "engine", engine, "error", err)
-		}
+	driver := s.drivers[s.activeEngine]
+	if err := driver.Start(); err != nil {
+		s.logger.Error("Failed to start driver", "engine", s.activeEngine, "error", err)
+		return err
 	}
 	return nil
 }
 
-// Stop stops all driver background watchers
+// Stop stops the active driver's background watcher
 func (s *Scanner) Stop() {
-	for _, driver := range s.drivers {
-		driver.Stop()
-	}
+	s.drivers[s.activeEngine].Stop()
 	s.detectionCache.Stop()
 }
 
@@ -172,12 +175,8 @@ func (s *Scanner) deleteFile(filePath, fileID string) error {
 }
 
 func (s *Scanner) CheckHealth() []*drivers.EngineHealth {
-	var results []*drivers.EngineHealth
-	for _, driver := range s.drivers {
-		health, _ := driver.CheckHealth()
-		results = append(results, health)
-	}
-	return results
+	health, _ := s.drivers[s.activeEngine].CheckHealth()
+	return []*drivers.EngineHealth{health}
 }
 
 func (s *Scanner) GetActiveEngineHealth() (*drivers.EngineHealth, error) {
@@ -185,11 +184,7 @@ func (s *Scanner) GetActiveEngineHealth() (*drivers.EngineHealth, error) {
 }
 
 func (s *Scanner) GetEngineInfo() []drivers.EngineInfo {
-	var results []drivers.EngineInfo
-	for _, driver := range s.drivers {
-		results = append(results, driver.GetInfo())
-	}
-	return results
+	return []drivers.EngineInfo{s.drivers[s.activeEngine].GetInfo()}
 }
 
 func (s *Scanner) ActiveEngine() config.EngineType {

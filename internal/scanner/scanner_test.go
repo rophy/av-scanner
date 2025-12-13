@@ -118,24 +118,15 @@ func TestScanner_CheckHealth(t *testing.T) {
 
 	health := s.CheckHealth()
 
-	// Should have health for all drivers (clamav, trendmicro, mock)
-	if len(health) < 3 {
-		t.Errorf("expected at least 3 health results, got %d", len(health))
+	// Should have health only for active driver (mock)
+	if len(health) != 1 {
+		t.Errorf("expected 1 health result, got %d", len(health))
 	}
 
-	// Find mock engine health
-	var mockHealth *drivers.EngineHealth
-	for _, h := range health {
-		if h.Engine == config.EngineMock {
-			mockHealth = h
-			break
-		}
+	if health[0].Engine != config.EngineMock {
+		t.Errorf("expected mock engine, got %s", health[0].Engine)
 	}
-
-	if mockHealth == nil {
-		t.Fatal("mock engine health not found")
-	}
-	if !mockHealth.Healthy {
+	if !health[0].Healthy {
 		t.Error("expected mock engine to be healthy")
 	}
 }
@@ -165,26 +156,18 @@ func TestScanner_GetEngineInfo(t *testing.T) {
 
 	info := s.GetEngineInfo()
 
-	if len(info) < 3 {
-		t.Errorf("expected at least 3 engine infos, got %d", len(info))
+	// Should have info only for active driver (mock)
+	if len(info) != 1 {
+		t.Errorf("expected 1 engine info, got %d", len(info))
 	}
 
-	// Find mock engine info
-	var mockInfo *drivers.EngineInfo
-	for i := range info {
-		if info[i].Engine == config.EngineMock {
-			mockInfo = &info[i]
-			break
-		}
+	if info[0].Engine != config.EngineMock {
+		t.Errorf("expected mock engine, got %s", info[0].Engine)
 	}
-
-	if mockInfo == nil {
-		t.Fatal("mock engine info not found")
-	}
-	if !mockInfo.Available {
+	if !info[0].Available {
 		t.Error("expected mock engine to be available")
 	}
-	if !mockInfo.ManualScanAvailable {
+	if !info[0].ManualScanAvailable {
 		t.Error("expected mock engine manual scan to be available")
 	}
 }

@@ -217,8 +217,8 @@ func TestAPI_HandleEngines(t *testing.T) {
 	}
 
 	engines, ok := resp["engines"].([]interface{})
-	if !ok || len(engines) < 3 {
-		t.Errorf("expected at least 3 engines, got %v", resp["engines"])
+	if !ok || len(engines) != 1 {
+		t.Errorf("expected 1 engine (active only), got %v", resp["engines"])
 	}
 }
 
