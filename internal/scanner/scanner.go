@@ -129,8 +129,23 @@ func (s *Scanner) Scan(filePath, fileID, originalName string, size int64) (*Scan
 			time.Sleep(retryDelay)
 			waited += retryDelay
 		}
-		// If still not found in cache, it's an error
+		// If still not found in cache, check why
 		if finalStatus == "" {
+			fileExists := true
+			if _, statErr := os.Stat(filePath); os.IsNotExist(statErr) {
+				fileExists = false
+			}
+
+			if !fileExists {
+				// File disappeared but no RTS detection - likely log parsing issue
+				s.logger.Error("POTENTIAL LOG PARSING ISSUE: file disappeared but no RTS detection found",
+					"fileId", fileID,
+					"filePath", absPath,
+					"waitedMs", waited.Milliseconds(),
+					"hint", "check if RTS log format matches expected pattern",
+				)
+			}
+
 			return nil, fmt.Errorf("scan failed: file not accessible and no RTS detection found")
 		}
 	}

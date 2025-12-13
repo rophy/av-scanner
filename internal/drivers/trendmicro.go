@@ -19,8 +19,8 @@ import (
 
 var (
 	// TrendMicro DS Agent log patterns
-	tmMalwareRegex    = regexp.MustCompile(`Malware detected:\s+(.+),\s+Malware:\s+(.+)`)
-	tmQuarantineRegex = regexp.MustCompile(`Quarantined:\s+(.+)`)
+	// Sample: 2025-11-21 13:53:06.726130: [ds_am/4] | [SCTRL] (0000-0000-0000, /home/ubuntu/xxxx.file) virus found: 2, act_1st=2, act_2nd=255, act_1st_error_code=0 | scanctrl_vmpd_module.cpp:1538:scanctrl_determine_send_dispatch_result | F7E01:1784DB:4451::
+	tmVirusFoundRegex = regexp.MustCompile(`\([^,]+,\s*([^)]+)\)\s*virus found:`)
 )
 
 type TrendMicroDriver struct {
@@ -88,37 +88,21 @@ func (d *TrendMicroDriver) watchLog() {
 }
 
 func (d *TrendMicroDriver) processLogLine(line string) {
-	// Check for malware detection
-	if matches := tmMalwareRegex.FindStringSubmatch(line); matches != nil {
-		absPath, err := filepath.Abs(matches[1])
+	// Check for virus detection: (trace-id, /path/to/file) virus found: N
+	if matches := tmVirusFoundRegex.FindStringSubmatch(line); matches != nil {
+		filePath := strings.TrimSpace(matches[1])
+		absPath, err := filepath.Abs(filePath)
 		if err != nil {
-			absPath = matches[1]
+			absPath = filePath
 		}
 
 		d.cache.Add(absPath, &cache.Detection{
-			FilePath:  matches[1],
+			FilePath:  filePath,
 			Status:    "infected",
-			Signature: matches[2],
+			Signature: "virus",
 			Raw:       line,
 		})
-		d.logger.Debug("Cached detection", "path", absPath, "signature", matches[2])
-		return
-	}
-
-	// Check for quarantine
-	if matches := tmQuarantineRegex.FindStringSubmatch(line); matches != nil {
-		absPath, err := filepath.Abs(matches[1])
-		if err != nil {
-			absPath = matches[1]
-		}
-
-		d.cache.Add(absPath, &cache.Detection{
-			FilePath:  matches[1],
-			Status:    "infected",
-			Signature: "",
-			Raw:       line,
-		})
-		d.logger.Debug("Cached quarantine", "path", absPath)
+		d.logger.Debug("Cached virus detection", "path", absPath)
 	}
 }
 
