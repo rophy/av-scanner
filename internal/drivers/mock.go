@@ -9,10 +9,7 @@ import (
 	"github.com/rophy/av-scanner/internal/config"
 )
 
-const (
-	EngineMock     config.EngineType = "mock"
-	EICARSignature                   = "EICAR-Test-File"
-)
+const EICARSignature = "EICAR-Test-File"
 
 // EICAR test pattern as character codes to avoid triggering AV software
 // https://en.wikipedia.org/wiki/EICAR_test_file
@@ -42,7 +39,7 @@ func NewMockDriver(cfg config.DriverConfig) *MockDriver {
 }
 
 func (d *MockDriver) Engine() config.EngineType {
-	return EngineMock
+	return config.EngineMock
 }
 
 func (d *MockDriver) Config() config.DriverConfig {
@@ -75,7 +72,7 @@ func (d *MockDriver) scan(filePath string, phase ScanPhase) (*ScanResult, error)
 
 	result := &ScanResult{
 		Status:    StatusClean,
-		Engine:    EngineMock,
+		Engine:    config.EngineMock,
 		Phase:     phase,
 		FilePath:  filePath,
 		FileID:    fileID,
@@ -93,7 +90,7 @@ func (d *MockDriver) scan(filePath string, phase ScanPhase) (*ScanResult, error)
 
 func (d *MockDriver) CheckHealth() (*EngineHealth, error) {
 	return &EngineHealth{
-		Engine:    EngineMock,
+		Engine:    config.EngineMock,
 		Healthy:   true,
 		Version:   "1.0.0-mock",
 		LastCheck: time.Now(),
@@ -102,7 +99,7 @@ func (d *MockDriver) CheckHealth() (*EngineHealth, error) {
 
 func (d *MockDriver) GetInfo() EngineInfo {
 	return EngineInfo{
-		Engine:              EngineMock,
+		Engine:              config.EngineMock,
 		Available:           true,
 		RTSEnabled:          false,
 		ManualScanAvailable: true,

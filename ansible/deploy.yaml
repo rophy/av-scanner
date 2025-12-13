@@ -4,7 +4,7 @@
   become: true
   vars:
     app_dir: /home/ubuntu/av-scanner
-    av_engine: clamav
+    av_engine: clamav  # Options: clamav, trendmicro, mock
     image_name: av-scanner
     image_tag: latest
     image_file: "{{ playbook_dir }}/../av-scanner-image.tar"

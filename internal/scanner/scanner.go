@@ -53,8 +53,8 @@ func New(cfg *config.Config, logger *slog.Logger) *Scanner {
 		logger,
 		detectionCache,
 	)
-	s.drivers[drivers.EngineMock] = drivers.NewMockDriver(
-		config.DriverConfig{Engine: drivers.EngineMock},
+	s.drivers[config.EngineMock] = drivers.NewMockDriver(
+		config.DriverConfig{Engine: config.EngineMock},
 	)
 
 	return s

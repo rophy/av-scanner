@@ -28,7 +28,7 @@ func newTestAPI(t *testing.T) (*API, string) {
 		Port:         3000,
 		UploadDir:    tmpDir,
 		MaxFileSize:  10 * 1024 * 1024,
-		ActiveEngine: drivers.EngineMock,
+		ActiveEngine: config.EngineMock,
 		LogLevel:     "error",
 		Drivers: map[config.EngineType]config.DriverConfig{
 			config.EngineClamAV:     {Engine: config.EngineClamAV},

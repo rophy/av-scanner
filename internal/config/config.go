@@ -11,6 +11,7 @@ type EngineType string
 const (
 	EngineClamAV     EngineType = "clamav"
 	EngineTrendMicro EngineType = "trendmicro"
+	EngineMock       EngineType = "mock"
 )
 
 type DriverConfig struct {
@@ -68,7 +69,7 @@ func Load() (*Config, error) {
 }
 
 func (c *Config) Validate() error {
-	if c.ActiveEngine != EngineClamAV && c.ActiveEngine != EngineTrendMicro {
+	if c.ActiveEngine != EngineClamAV && c.ActiveEngine != EngineTrendMicro && c.ActiveEngine != EngineMock {
 		return fmt.Errorf("invalid active engine: %s", c.ActiveEngine)
 	}
 	if c.Port < 1 || c.Port > 65535 {

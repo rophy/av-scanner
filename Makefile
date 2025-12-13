@@ -49,3 +49,23 @@ test:
 	@echo "$(EICAR_B64)" | base64 -d > /tmp/eicar-test.com
 	@curl -s -X POST -F "file=@/tmp/eicar-test.com" "http://$(AV_SCANNER_IP):3000/api/v1/scan" | jq .
 	@rm -f /tmp/eicar-test.com
+
+# Run unit tests
+test-unit:
+	go test -race ./...
+
+# Test locally with mock driver
+test-mock:
+	@mkdir -p /tmp/av-scanner-test
+	@echo "Starting server with mock driver on port 3333..."
+	@AV_ENGINE=mock UPLOAD_DIR=/tmp/av-scanner-test PORT=3333 go run . & \
+	PID=$$!; \
+	sleep 1; \
+	echo "Testing clean file..."; \
+	echo "clean content" > /tmp/clean-test.txt; \
+	curl -s -X POST -F "file=@/tmp/clean-test.txt" "http://localhost:3333/api/v1/scan" | jq .; \
+	echo "Testing EICAR detection..."; \
+	echo "$(EICAR_B64)" | base64 -d > /tmp/eicar-test.com; \
+	curl -s -X POST -F "file=@/tmp/eicar-test.com" "http://localhost:3333/api/v1/scan" | jq .; \
+	rm -f /tmp/clean-test.txt /tmp/eicar-test.com; \
+	kill $$PID 2>/dev/null || true

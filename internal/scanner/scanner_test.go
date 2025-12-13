@@ -22,7 +22,7 @@ func newTestScanner(t *testing.T) (*Scanner, string) {
 		Port:         3000,
 		UploadDir:    tmpDir,
 		MaxFileSize:  10 * 1024 * 1024,
-		ActiveEngine: drivers.EngineMock,
+		ActiveEngine: config.EngineMock,
 		LogLevel:     "debug",
 		Drivers: map[config.EngineType]config.DriverConfig{
 			config.EngineClamAV:     {Engine: config.EngineClamAV},
@@ -55,7 +55,7 @@ func TestScanner_ScanCleanFile(t *testing.T) {
 	if result.Status != drivers.StatusClean {
 		t.Errorf("expected status clean, got %s", result.Status)
 	}
-	if result.Engine != drivers.EngineMock {
+	if result.Engine != config.EngineMock {
 		t.Errorf("expected engine mock, got %s", result.Engine)
 	}
 	if result.Signature != "" {
@@ -82,7 +82,7 @@ func TestScanner_ScanInfectedFile(t *testing.T) {
 	if result.Status != drivers.StatusInfected {
 		t.Errorf("expected status infected, got %s", result.Status)
 	}
-	if result.Engine != drivers.EngineMock {
+	if result.Engine != config.EngineMock {
 		t.Errorf("expected engine mock, got %s", result.Engine)
 	}
 	if result.Signature != drivers.EICARSignature {
@@ -126,7 +126,7 @@ func TestScanner_CheckHealth(t *testing.T) {
 	// Find mock engine health
 	var mockHealth *drivers.EngineHealth
 	for _, h := range health {
-		if h.Engine == drivers.EngineMock {
+		if h.Engine == config.EngineMock {
 			mockHealth = h
 			break
 		}
@@ -150,7 +150,7 @@ func TestScanner_GetActiveEngineHealth(t *testing.T) {
 		t.Fatalf("failed to get active engine health: %v", err)
 	}
 
-	if health.Engine != drivers.EngineMock {
+	if health.Engine != config.EngineMock {
 		t.Errorf("expected active engine mock, got %s", health.Engine)
 	}
 	if !health.Healthy {
@@ -172,7 +172,7 @@ func TestScanner_GetEngineInfo(t *testing.T) {
 	// Find mock engine info
 	var mockInfo *drivers.EngineInfo
 	for i := range info {
-		if info[i].Engine == drivers.EngineMock {
+		if info[i].Engine == config.EngineMock {
 			mockInfo = &info[i]
 			break
 		}
@@ -194,7 +194,7 @@ func TestScanner_ActiveEngine(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 	defer s.Stop()
 
-	if s.ActiveEngine() != drivers.EngineMock {
+	if s.ActiveEngine() != config.EngineMock {
 		t.Errorf("expected active engine mock, got %s", s.ActiveEngine())
 	}
 }

@@ -203,6 +203,15 @@ func TestValidate(t *testing.T) {
 			expectError: false,
 		},
 		{
+			name: "valid config with mock",
+			config: Config{
+				Port:         3000,
+				ActiveEngine: EngineMock,
+				MaxFileSize:  100,
+			},
+			expectError: false,
+		},
+		{
 			name: "invalid engine",
 			config: Config{
 				Port:         3000,
@@ -332,5 +341,8 @@ func TestEngineTypeConstants(t *testing.T) {
 	}
 	if EngineTrendMicro != "trendmicro" {
 		t.Errorf("expected EngineTrendMicro to be 'trendmicro', got %s", EngineTrendMicro)
+	}
+	if EngineMock != "mock" {
+		t.Errorf("expected EngineMock to be 'mock', got %s", EngineMock)
 	}
 }
