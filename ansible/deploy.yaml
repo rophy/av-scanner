@@ -1,4 +1,12 @@
 ---
+# deploy.yaml - Deploy AV Scanner binary to VM
+#
+# Prerequisites:
+#   - Run 'make setup-vm' first to install ClamAV
+#
+# Usage:
+#   make deploy
+#
 - name: Deploy AV Scanner to VM
   hosts: av-scanner
   become: true
@@ -8,8 +16,24 @@
     image_name: av-scanner
     image_tag: latest
     image_file: "{{ playbook_dir }}/../av-scanner-image.tar"
+    scan_dir: /tmp/av-scanner
+    clamav_log_dir: /var/log/clamav
 
   tasks:
+    # ============================================
+    # Prerequisites Check
+    # ============================================
+    - name: Check if ClamAV is installed
+      command: which clamdscan
+      register: clamav_check
+      changed_when: false
+      failed_when: false
+
+    - name: Warn if ClamAV not installed
+      debug:
+        msg: "WARNING: ClamAV not found. Run 'make setup-vm' first for full functionality."
+      when: clamav_check.rc != 0
+
     # ============================================
     # Podman Installation (for extracting binary)
     # ============================================
@@ -19,90 +43,6 @@
           - podman
         state: present
         update_cache: true
-
-    # ============================================
-    # ClamAV Installation
-    # ============================================
-    - name: Install ClamAV and dependencies
-      apt:
-        name:
-          - clamav
-          - clamav-daemon
-          - moreutils
-        state: present
-
-    - name: Create scan directory for on-access monitoring
-      file:
-        path: /tmp/av-scanner
-        state: directory
-        mode: "0777"
-
-    - name: Mount tmpfs for scan directory (enables fanotify)
-      mount:
-        path: /tmp/av-scanner
-        src: tmpfs
-        fstype: tmpfs
-        opts: size=512M,mode=0777
-        state: mounted
-
-    - name: Ensure freshclam is running
-      systemd:
-        name: clamav-freshclam
-        state: started
-        enabled: true
-
-    - name: Ensure ClamAV daemon is running
-      systemd:
-        name: clamav-daemon
-        state: started
-        enabled: true
-
-    - name: Configure ClamAV on-access scanning
-      blockinfile:
-        path: /etc/clamav/clamd.conf
-        marker: "# {mark} ANSIBLE MANAGED - On-Access Scanning"
-        block: |
-          OnAccessMountPath /tmp/av-scanner
-          OnAccessExcludeUname clamav
-          OnAccessPrevention yes
-          LogTime yes
-      notify: Restart ClamAV services
-
-    - name: Create clamonacc systemd service
-      copy:
-        content: |
-          [Unit]
-          Description=ClamAV On-Access Scanner
-          Requires=clamav-daemon.service
-          After=clamav-daemon.service
-
-          [Service]
-          Type=simple
-          User=root
-          ExecStart=/usr/sbin/clamonacc --foreground --log=/var/log/clamav/clamonacc.log --remove
-          Restart=on-failure
-          RestartSec=5
-
-          [Install]
-          WantedBy=multi-user.target
-        dest: /etc/systemd/system/clamav-clamonacc.service
-        mode: "0644"
-      notify: Restart ClamAV services
-
-    - name: Ensure clamonacc log file exists
-      file:
-        path: /var/log/clamav/clamonacc.log
-        state: touch
-        owner: clamav
-        group: clamav
-        mode: "0644"
-
-    - name: Enable and start clamonacc
-      systemd:
-        name: clamav-clamonacc
-        state: started
-        enabled: true
-        daemon_reload: true
 
     # ============================================
     # Binary Extraction from Docker Image
@@ -203,15 +143,6 @@
         msg: "AV Scanner is running at http://{{ ansible_host }}:3000"
 
   handlers:
-    - name: Restart ClamAV services
-      systemd:
-        name: "{{ item }}"
-        state: restarted
-        daemon_reload: true
-      loop:
-        - clamav-daemon
-        - clamav-clamonacc
-
     - name: Restart av-scanner
       systemd:
         name: av-scanner

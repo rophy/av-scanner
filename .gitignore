@@ -1,3 +1,6 @@
 venv/
 *.tar
 av-scanner
+
+# VM state file (created by scripts/vm-init.sh)
+.vm-state
