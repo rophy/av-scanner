@@ -21,33 +21,30 @@ flowchart TB
 
         subgraph scanner["AV Scanner Service (systemd)"]
             upload["1. File uploaded to /tmp/av-scanner"]
-            delay["2. Brief delay (50ms + 10ms/MB)"]
-            rtscheck1["3. Check RTS cache"]
-            ondemand["4. On-demand scan (if RTS miss)"]
-            rtscheck2["5. Check RTS cache again"]
-            result["6. Return result"]
+            ondemand["2. On-demand scan"]
+            rtscheck["3. Wait for RTS cache (if file missing)"]
+            result["4. Return result"]
         end
 
-        upload --> delay --> rtscheck1
-        rtscheck1 -->|hit| result
-        rtscheck1 -->|miss| ondemand --> rtscheck2 --> result
-        clamav --> rtscheck1
-        clamav --> rtscheck2
+        upload --> ondemand
+        ondemand -->|success| result
+        ondemand -->|file missing| rtscheck --> result
+        clamav -.->|quarantine| rtscheck
     end
 ```
 
 ## Scan Flow
 
 1. **File uploaded** to scan directory
-2. **Brief delay** (50ms base + 10ms per MB) to allow RTS detection
-3. **Check RTS cache** - if infected, return immediately (fast path)
-4. **On-demand scan** - run `clamdscan`/`dsa_scan` if RTS didn't catch it
-5. **Check RTS cache again** - catches race condition where RTS detected during on-demand scan
-6. **Return result** - infected if either RTS or on-demand detected, clean only if both clear
+2. **On-demand scan** - run `clamdscan`/`dsa_scan`
+   - If scan completes successfully, use its result (clean/infected)
+3. **RTS fallback** - if on-demand scan fails (file missing = RTS quarantined it):
+   - Wait for RTS cache with configurable timeout (default: 500ms + 10ms per MB)
+   - Return infected if found in cache, error if timeout
 
 This hybrid approach ensures:
-- **Fast detection** (~50ms) when RTS catches the file
-- **Reliable detection** via on-demand scan as fallback
+- **Fast detection** (~200ms avg) for most files via on-demand scan
+- **Reliable detection** even when RTS quarantines files before on-demand scan runs
 - **No false negatives** from race conditions
 
 ## Features
@@ -182,9 +179,13 @@ multipass purge
 | `CLAMAV_RTS_LOG_PATH` | /var/log/clamav/clamonacc.log | ClamAV RTS log file |
 | `CLAMAV_SCAN_BINARY` | /usr/bin/clamdscan | ClamAV on-demand scan binary |
 | `CLAMAV_TIMEOUT` | 15000 | ClamAV scan timeout in ms |
+| `CLAMAV_RTS_CACHE_BASE_DELAY` | 500 | Base delay (ms) when waiting for RTS cache |
+| `CLAMAV_RTS_CACHE_DELAY_PER_MB` | 10 | Additional delay (ms) per MB of file size |
 | `TM_RTS_LOG_PATH` | /var/log/ds_agent/ds_agent.log | DS Agent RTS log file |
 | `TM_SCAN_BINARY` | /opt/ds_agent/dsa_scan | DS Agent on-demand scan binary |
 | `TM_TIMEOUT` | 15000 | DS Agent scan timeout in ms |
+| `TM_RTS_CACHE_BASE_DELAY` | 500 | Base delay (ms) when waiting for RTS cache |
+| `TM_RTS_CACHE_DELAY_PER_MB` | 10 | Additional delay (ms) per MB of file size |
 
 To change configuration, edit the systemd service file on the VM:
 

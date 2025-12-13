@@ -88,66 +88,48 @@ func (s *Scanner) Scan(filePath, fileID, originalName string, size int64) (*Scan
 
 	absPath, _ := filepath.Abs(filePath)
 
-	// 1. Brief delay proportional to file size to give RTS time to detect
-	// Base 50ms + 10ms per MB
-	delay := 50*time.Millisecond + time.Duration(size/1024/1024)*10*time.Millisecond
-	time.Sleep(delay)
-
-	// 2. Check RTS cache first (fast path)
-	if cached, found := s.detectionCache.Get(absPath); found && cached.Status == "infected" {
-		s.logger.Info("File detected by RTS (fast path)",
-			"fileId", fileID,
-			"signature", cached.Signature,
-		)
-		s.deleteFile(filePath, fileID)
-		return &ScanResponse{
-			FileID:        fileID,
-			Status:        drivers.StatusInfected,
-			Engine:        driver.Engine(),
-			Signature:     cached.Signature,
-			TotalDuration: time.Since(startTime).Milliseconds(),
-		}, nil
-	}
-
-	// 3. RTS didn't catch it, run manual scan
+	// 1. Run manual scan
 	result, err := driver.ManualScan(filePath)
 
 	var finalStatus drivers.ScanStatus
 	var signature string
 
-	if err != nil {
-		s.logger.Warn("Manual scan error", "error", err, "fileId", fileID)
-		finalStatus = drivers.StatusError
-	} else if result.Status == drivers.StatusInfected {
-		finalStatus = drivers.StatusInfected
+	if err == nil && (result.Status == drivers.StatusClean || result.Status == drivers.StatusInfected) {
+		// Manual scan completed successfully - use its result
+		finalStatus = result.Status
 		signature = result.Signature
-	} else if result.Status == drivers.StatusError {
-		finalStatus = drivers.StatusError
 	} else {
-		finalStatus = drivers.StatusClean
-	}
-
-	// 4. Check RTS cache again (catches race condition where RTS detected during manual scan)
-	if finalStatus == drivers.StatusError || finalStatus == drivers.StatusClean {
-		if cached, found := s.detectionCache.Get(absPath); found && cached.Status == "infected" {
-			s.logger.Info("File detected by RTS (post-scan check)",
-				"fileId", fileID,
-				"signature", cached.Signature,
-			)
-			finalStatus = drivers.StatusInfected
-			signature = cached.Signature
+		// 2. Manual scan failed (file missing = RTS quarantined it)
+		// Wait for RTS cache with timeout proportional to file size
+		driverCfg := driver.Config()
+		s.logger.Debug("Manual scan failed, waiting for RTS cache", "error", err, "fileId", fileID)
+		retryDelay := 20 * time.Millisecond
+		baseDelay := time.Duration(driverCfg.RTSCacheBaseDelay) * time.Millisecond
+		delayPerMB := time.Duration(driverCfg.RTSCacheDelayPerMB) * time.Millisecond
+		maxWait := baseDelay + time.Duration(size/1024/1024)*delayPerMB
+		waited := time.Duration(0)
+		for waited < maxWait {
+			if cached, found := s.detectionCache.Get(absPath); found && cached.Status == "infected" {
+				s.logger.Info("File detected by RTS",
+					"fileId", fileID,
+					"signature", cached.Signature,
+					"waitedMs", waited.Milliseconds(),
+				)
+				finalStatus = drivers.StatusInfected
+				signature = cached.Signature
+				break
+			}
+			time.Sleep(retryDelay)
+			waited += retryDelay
+		}
+		// If still not found in cache, it's an error
+		if finalStatus == "" {
+			return nil, fmt.Errorf("scan failed: file not accessible and no RTS detection found")
 		}
 	}
 
-	// 5. Clean up file (may already be removed by RTS)
-	if err := s.deleteFile(filePath, fileID); err != nil {
-		s.logger.Debug("File deletion failed", "error", err, "fileId", fileID)
-	}
-
-	// If still error after checking cache, treat as scan failure
-	if finalStatus == drivers.StatusError {
-		return nil, fmt.Errorf("scan failed: file not accessible and no RTS detection found")
-	}
+	// 3. Clean up file (may already be removed by RTS)
+	s.deleteFile(filePath, fileID)
 
 	response := &ScanResponse{
 		FileID:        fileID,

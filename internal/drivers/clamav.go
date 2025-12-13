@@ -103,6 +103,10 @@ func (d *ClamAVDriver) Engine() config.EngineType {
 	return config.EngineClamAV
 }
 
+func (d *ClamAVDriver) Config() config.DriverConfig {
+	return d.config
+}
+
 func (d *ClamAVDriver) RTSWatch(filePath string, opts WatchOptions) (*ScanResult, error) {
 	startTime := time.Now()
 	fileID := filepath.Base(filePath)

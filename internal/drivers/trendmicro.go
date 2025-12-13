@@ -126,6 +126,10 @@ func (d *TrendMicroDriver) Engine() config.EngineType {
 	return config.EngineTrendMicro
 }
 
+func (d *TrendMicroDriver) Config() config.DriverConfig {
+	return d.config
+}
+
 func (d *TrendMicroDriver) RTSWatch(filePath string, opts WatchOptions) (*ScanResult, error) {
 	startTime := time.Now()
 	fileID := filepath.Base(filePath)
