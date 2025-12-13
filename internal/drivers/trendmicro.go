@@ -229,34 +229,43 @@ func (d *TrendMicroDriver) ManualScan(filePath string) (*ScanResult, error) {
 }
 
 func (d *TrendMicroDriver) parseManualScanOutput(output string, exitCode int) (ScanStatus, string) {
-	// Try JSON parsing first
+	// Try JSON parsing first (dsa_scan --json output format)
 	var jsonResult struct {
-		Infected    bool   `json:"infected"`
-		Status      string `json:"status"`
-		Signature   string `json:"signature"`
-		MalwareName string `json:"malware_name"`
-		Threats     []struct {
-			Name string `json:"name"`
-		} `json:"threats"`
+		TraceID           string `json:"traceID"`
+		NumOfFileScanned  int    `json:"numOfFileScanned"`
+		NumOfFileSkipped  int    `json:"numOfFileSkipped"`
+		NumOfFileInfected int    `json:"numOfFileInfected"`
+		TimeElapse        float64 `json:"timeElapse"`
+		ErrorCode         int    `json:"errorCode"`
+		InfectedFiles     []struct {
+			FileName    string `json:"fileName"`
+			MalwareName string `json:"malwareName"`
+		} `json:"infectedFiles"`
 	}
 
 	if err := json.Unmarshal([]byte(output), &jsonResult); err == nil {
-		infected := jsonResult.Infected ||
-			jsonResult.Status == "infected" ||
-			len(jsonResult.Threats) > 0
-
-		signature := jsonResult.Signature
-		if signature == "" && jsonResult.MalwareName != "" {
-			signature = jsonResult.MalwareName
-		}
-		if signature == "" && len(jsonResult.Threats) > 0 {
-			signature = jsonResult.Threats[0].Name
+		// Check if file was skipped (not actually scanned)
+		if jsonResult.NumOfFileSkipped > 0 && jsonResult.NumOfFileScanned == 0 {
+			d.logger.Warn("File was skipped by scanner", "skipped", jsonResult.NumOfFileSkipped)
+			return StatusError, ""
 		}
 
-		if infected {
+		// Check for infected files
+		if jsonResult.NumOfFileInfected > 0 || len(jsonResult.InfectedFiles) > 0 {
+			signature := ""
+			if len(jsonResult.InfectedFiles) > 0 {
+				signature = jsonResult.InfectedFiles[0].MalwareName
+			}
 			return StatusInfected, signature
 		}
-		return StatusClean, ""
+
+		// File was scanned and is clean
+		if jsonResult.NumOfFileScanned > 0 {
+			return StatusClean, ""
+		}
+
+		// No files scanned, treat as error
+		return StatusError, ""
 	}
 
 	// Text-based fallback
