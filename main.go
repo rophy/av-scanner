@@ -13,9 +13,14 @@ import (
 	"github.com/rophy/av-scanner/internal/api"
 	"github.com/rophy/av-scanner/internal/config"
 	"github.com/rophy/av-scanner/internal/scanner"
+	"github.com/rophy/av-scanner/internal/version"
 )
 
 func main() {
+	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "-v") {
+		fmt.Printf("av-scanner %s (commit: %s, built: %s)\n", version.Version, version.Commit, version.BuildTime)
+		os.Exit(0)
+	}
 	// Setup logger
 	logLevel := slog.LevelInfo
 	if os.Getenv("LOG_LEVEL") == "debug" {

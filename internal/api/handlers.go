@@ -12,6 +12,7 @@ import (
 	"github.com/rophy/av-scanner/internal/config"
 	"github.com/rophy/av-scanner/internal/metrics"
 	"github.com/rophy/av-scanner/internal/scanner"
+	"github.com/rophy/av-scanner/internal/version"
 )
 
 type API struct {
@@ -37,6 +38,7 @@ func (a *API) Routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/engines", a.handleEngines)
 	mux.HandleFunc("GET /api/v1/ready", a.handleReady)
 	mux.HandleFunc("GET /api/v1/live", a.handleLive)
+	mux.HandleFunc("GET /api/v1/version", a.handleVersion)
 
 	// Prometheus metrics endpoint
 	mux.Handle("GET /metrics", metrics.Handler())
@@ -195,6 +197,14 @@ func (a *API) handleReady(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) handleLive(w http.ResponseWriter, r *http.Request) {
 	a.jsonResponse(w, map[string]interface{}{"alive": true}, http.StatusOK)
+}
+
+func (a *API) handleVersion(w http.ResponseWriter, r *http.Request) {
+	a.jsonResponse(w, map[string]interface{}{
+		"version":   version.Version,
+		"commit":    version.Commit,
+		"buildTime": version.BuildTime,
+	}, http.StatusOK)
 }
 
 func (a *API) jsonResponse(w http.ResponseWriter, data interface{}, status int) {

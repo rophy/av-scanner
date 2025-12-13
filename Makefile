@@ -1,7 +1,9 @@
 .PHONY: help build push deploy clean test-unit test-integration vm-init vm-start vm-stop setup-vm
 
 IMAGE_NAME ?= av-scanner
-IMAGE_TAG ?= latest
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+IMAGE_TAG ?= $(VERSION)
 VM_NAME ?= av-scanner
 STATE_FILE ?= .vm-state
 
@@ -83,7 +85,10 @@ setup-vm:
 
 # Build the container image (contains Go binary)
 build:
-	podman build -t $(IMAGE_NAME):$(IMAGE_TAG) .
+	podman build \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg COMMIT=$(COMMIT) \
+		-t $(IMAGE_NAME):$(IMAGE_TAG) .
 
 # Push image to VM registry
 push: build

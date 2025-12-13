@@ -7,6 +7,9 @@
 
 FROM docker.io/library/golang:1.23-alpine AS builder
 
+ARG VERSION=dev
+ARG COMMIT=unknown
+
 WORKDIR /app
 
 # Install build dependencies
@@ -18,7 +21,10 @@ COPY . .
 # Download dependencies and build
 RUN go mod tidy
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
-    -ldflags="-w -s" \
+    -ldflags="-w -s \
+        -X github.com/rophy/av-scanner/internal/version.Version=${VERSION} \
+        -X github.com/rophy/av-scanner/internal/version.Commit=${COMMIT} \
+        -X github.com/rophy/av-scanner/internal/version.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     -o av-scanner \
     main.go
 
