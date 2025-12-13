@@ -60,21 +60,38 @@
       register: podman_pull
       changed_when: "'Storing signatures' in podman_pull.stdout or 'Writing manifest' in podman_pull.stdout"
 
-    - name: Remove any existing extraction container
-      command: podman rm -f av-scanner-extract
-      failed_when: false
+    - name: Check installed binary version
+      command: /usr/local/bin/av-scanner --version
+      register: installed_version
       changed_when: false
-
-    - name: Create temporary container to extract binary
-      command: podman create --name av-scanner-extract {{ registry }}/{{ image_name }}:{{ image_tag }}
-
-    - name: Extract binary from container
-      command: podman cp av-scanner-extract:/av-scanner /usr/local/bin/av-scanner
-      notify: Restart av-scanner
-
-    - name: Remove temporary container
-      command: podman rm av-scanner-extract
       failed_when: false
+
+    - name: Parse installed version
+      set_fact:
+        installed_ver: "{{ (installed_version.stdout | default('') | regex_search('av-scanner ([^ ]+)', '\\1') | default(['none'], true))[0] }}"
+
+    - name: Extract binary if version changed
+      when: installed_ver != image_tag
+      block:
+        - name: Remove any existing extraction container
+          command: podman rm -f av-scanner-extract
+          failed_when: false
+          changed_when: false
+
+        - name: Create temporary container to extract binary
+          command: podman create --name av-scanner-extract {{ registry }}/{{ image_name }}:{{ image_tag }}
+
+        - name: Extract binary from container
+          command: podman cp av-scanner-extract:/av-scanner /usr/local/bin/av-scanner
+          notify: Restart av-scanner
+
+        - name: Remove temporary container
+          command: podman rm av-scanner-extract
+          failed_when: false
+
+    - name: Show version status
+      debug:
+        msg: "Installed: {{ installed_ver }} | Image tag: {{ image_tag }}{{ ' (skipped extraction)' if installed_ver == image_tag else ' (extracted new binary)' }}"
 
     - name: Set binary permissions
       file:
