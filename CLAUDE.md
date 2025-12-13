@@ -37,4 +37,18 @@
 This project uses **podman** (not docker) for:
 - Building images: `podman build`
 - Pushing to registry: `podman push --tls-verify=false`
-- Dockerfile must use fully qualified image names (e.g., `docker.io/library/golang:1.22-alpine`)
+- Dockerfile must use fully qualified image names (e.g., `docker.io/library/golang:1.23-alpine`)
+
+## EICAR Test String
+
+**NEVER** store the EICAR test string directly in source files - it will trigger local AV scanners.
+
+Use base64 encoding instead:
+```go
+eicarB64 := "WDVPIVAlQEFQWzRcUFpYNTQoUF4pN0NDKTd9JEVJQ0FSLVNUQU5EQVJELUFOVElWSVJVUy1URVNULUZJTEUhJEgrSCo="
+eicar, _ := base64.StdEncoding.DecodeString(eicarB64)
+```
+
+```bash
+echo "WDVPIVAlQEFQWzRcUFpYNTQoUF4pN0NDKTd9JEVJQ0FSLVNUQU5EQVJELUFOVElWSVJVUy1URVNULUZJTEUhJEgrSCo=" | base64 -d
+```
