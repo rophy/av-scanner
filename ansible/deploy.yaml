@@ -2,7 +2,7 @@
 # deploy.yaml - Deploy AV Scanner binary to VM
 #
 # Prerequisites:
-#   - Run 'make setup-vm' first to install ClamAV
+#   - Run 'make setup-vm' first to install ClamAV and registry
 #
 # Usage:
 #   make deploy
@@ -11,11 +11,10 @@
   hosts: av-scanner
   become: true
   vars:
-    app_dir: /home/ubuntu/av-scanner
     av_engine: clamav  # Options: clamav, trendmicro, mock
     image_name: av-scanner
     image_tag: latest
-    image_file: "{{ playbook_dir }}/../av-scanner-image.tar"
+    registry: localhost:5000
     scan_dir: /tmp/av-scanner
     clamav_log_dir: /var/log/clamav
 
@@ -29,50 +28,45 @@
       changed_when: false
       failed_when: false
 
-    - name: Warn if ClamAV not installed
-      debug:
-        msg: "WARNING: ClamAV not found. Run 'make setup-vm' first for full functionality."
-      when: clamav_check.rc != 0
+    - name: Fail if ClamAV not installed
+      fail:
+        msg: |
+          ClamAV is not installed on this VM.
+          Please run 'make setup-vm' first to install ClamAV and its dependencies.
+          If you want to deploy without ClamAV (mock mode), set av_engine=mock:
+            ansible-playbook deploy.yaml -e av_engine=mock
+      when: clamav_check.rc != 0 and av_engine == 'clamav'
+
+    - name: Check if registry is running
+      uri:
+        url: "http://{{ registry }}/v2/"
+        method: GET
+        status_code: [200, 401]
+      register: registry_check
+      failed_when: false
+
+    - name: Fail if registry not running
+      fail:
+        msg: |
+          Registry is not running on this VM.
+          Please run 'make setup-vm' first to install the registry.
+      when: registry_check.status is not defined or registry_check.status not in [200, 401]
 
     # ============================================
-    # Podman Installation (for extracting binary)
+    # Pull and Extract Binary from Registry
     # ============================================
-    - name: Install Podman
-      apt:
-        name:
-          - podman
-        state: present
-        update_cache: true
+    - name: Pull image from local registry
+      command: podman pull --tls-verify=false {{ registry }}/{{ image_name }}:{{ image_tag }}
+      register: podman_pull
+      changed_when: "'Storing signatures' in podman_pull.stdout or 'Writing manifest' in podman_pull.stdout"
 
-    # ============================================
-    # Binary Extraction from Docker Image
-    # ============================================
-    - name: Create application directory
-      file:
-        path: "{{ app_dir }}"
-        state: directory
-        owner: ubuntu
-        group: ubuntu
-        mode: "0755"
-
-    - name: Copy container image to VM
-      copy:
-        src: "{{ image_file }}"
-        dest: "{{ app_dir }}/av-scanner-image.tar"
-        owner: ubuntu
-        group: ubuntu
-        mode: "0644"
-
-    - name: Load container image
-      command: podman load -i {{ app_dir }}/av-scanner-image.tar
-      register: podman_load
-      changed_when: "'Loaded image' in podman_load.stdout"
+    - name: Remove any existing extraction container
+      command: podman rm -f av-scanner-extract
+      failed_when: false
+      changed_when: false
 
     - name: Create temporary container to extract binary
-      command: podman create --name av-scanner-extract {{ image_name }}:{{ image_tag }}
-      register: container_create
-      changed_when: true
-      failed_when: false
+      command: podman create --name av-scanner-extract {{ registry }}/{{ image_name }}:{{ image_tag }}
 
     - name: Extract binary from container
       command: podman cp av-scanner-extract:/av-scanner /usr/local/bin/av-scanner

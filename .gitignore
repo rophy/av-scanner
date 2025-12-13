@@ -4,3 +4,6 @@ av-scanner
 
 # VM state file (created by scripts/vm-init.sh)
 .vm-state
+
+# SSH keys for QEMU VMs
+.ssh/

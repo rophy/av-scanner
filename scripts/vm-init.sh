@@ -5,8 +5,29 @@
 # Detects available hypervisor (Multipass with KVM or QEMU TCG) and creates
 # an Ubuntu VM with SSH access.
 #
+# Usage:
+#   ./vm-init.sh                    # Auto-detect or prompt for hypervisor
+#   ./vm-init.sh --hypervisor qemu  # Force QEMU (even if Multipass available)
+#   ./vm-init.sh --hypervisor multipass
+#
 
 set -e
+
+# Parse command line arguments
+FORCE_HYPERVISOR=""
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --hypervisor|-h)
+            FORCE_HYPERVISOR="$2"
+            shift 2
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Usage: $0 [--hypervisor multipass|qemu]"
+            exit 1
+            ;;
+    esac
+done
 
 # Configuration
 VM_NAME="${VM_NAME:-av-scanner}"
@@ -16,11 +37,16 @@ VM_DISK="${VM_DISK:-10G}"
 UBUNTU_VERSION="${UBUNTU_VERSION:-22.04}"
 SSH_PORT="${SSH_PORT:-2222}"
 API_PORT="${API_PORT:-3000}"
+REGISTRY_PORT="${REGISTRY_PORT:-5000}"
 
 # Directory setup
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 QEMU_DIR="${QEMU_DIR:-$HOME/qemu-vms}"
+
+# SSH key for QEMU VMs (project-local key)
+SSH_KEY_DIR="$PROJECT_DIR/.ssh"
+SSH_KEY="$SSH_KEY_DIR/id_ed25519"
 
 # State file to track hypervisor type
 STATE_FILE="$PROJECT_DIR/.vm-state"
@@ -60,8 +86,31 @@ detect_hypervisor() {
 install_qemu_prerequisites() {
     log_info "Installing QEMU prerequisites..."
     sudo apt-get update
-    sudo apt-get install -y qemu-system-x86 qemu-utils cloud-image-utils sshpass
+    sudo apt-get install -y qemu-system-x86 qemu-utils cloud-image-utils
     log_success "QEMU prerequisites installed"
+}
+
+# Generate SSH key if it doesn't exist
+ensure_ssh_key() {
+    if [ ! -f "$SSH_KEY" ]; then
+        log_info "Generating SSH key for QEMU VMs..."
+        mkdir -p "$SSH_KEY_DIR"
+        ssh-keygen -t ed25519 -f "$SSH_KEY" -N "" -C "av-scanner-vm" >/dev/null
+        log_success "SSH key generated: $SSH_KEY"
+    fi
+}
+
+# Try SSH connection using project SSH key
+try_ssh() {
+    local port=$1
+    local host=${2:-localhost}
+    local user=${3:-ubuntu}
+    local cmd=${4:-echo ok}
+
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -o ConnectTimeout=5 -o BatchMode=yes \
+        -i "$SSH_KEY" \
+        -p "$port" "$user@$host" "$cmd" &>/dev/null
 }
 
 # Create VM using Multipass
@@ -143,10 +192,11 @@ create_qemu_vm() {
         qemu-img create -F qcow2 -b "$base_image" -f qcow2 "$QEMU_DIR/$VM_NAME.qcow2" "$VM_DISK"
     fi
 
-    # Create cloud-init config
-    local ssh_key=""
-    [ -f "$HOME/.ssh/id_rsa.pub" ] && ssh_key=$(cat "$HOME/.ssh/id_rsa.pub")
+    # Ensure SSH key exists
+    ensure_ssh_key
+    local ssh_pub_key=$(cat "$SSH_KEY.pub")
 
+    # Create cloud-init config (SSH key auth only, no password)
     cat > "$QEMU_DIR/user-data" << EOF
 #cloud-config
 hostname: $VM_NAME
@@ -154,11 +204,10 @@ users:
   - name: ubuntu
     sudo: ALL=(ALL) NOPASSWD:ALL
     shell: /bin/bash
-    lock_passwd: false
-    plain_text_passwd: ubuntu
+    lock_passwd: true
     ssh_authorized_keys:
-      - $ssh_key
-ssh_pwauth: true
+      - $ssh_pub_key
+ssh_pwauth: false
 packages:
   - python3
   - python3-apt
@@ -182,7 +231,7 @@ EOF
         -smp "$VM_CPUS" \
         -drive file="$QEMU_DIR/$VM_NAME.qcow2",format=qcow2 \
         -drive file="$QEMU_DIR/$VM_NAME-seed.img",format=raw \
-        -netdev user,id=net0,hostfwd=tcp::${SSH_PORT}-:22,hostfwd=tcp::${API_PORT}-:3000 \
+        -netdev user,id=net0,hostfwd=tcp::${SSH_PORT}-:22,hostfwd=tcp::${API_PORT}-:3000,hostfwd=tcp::${REGISTRY_PORT}-:5000 \
         -device virtio-net-pci,netdev=net0 \
         -nographic \
         -pidfile "$QEMU_DIR/$VM_NAME.pid" \
@@ -194,7 +243,7 @@ EOF
     log_info "Waiting for VM to boot..."
     local attempt=0
     while [ $attempt -lt 60 ]; do
-        if sshpass -p 'ubuntu' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -p "$SSH_PORT" ubuntu@localhost "echo ok" &>/dev/null; then
+        if try_ssh "$SSH_PORT"; then
             break
         fi
         echo -n "."
@@ -210,8 +259,7 @@ EOF
 
     # Wait for cloud-init
     log_info "Waiting for cloud-init..."
-    sshpass -p 'ubuntu' ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" ubuntu@localhost \
-        "cloud-init status --wait" &>/dev/null || true
+    try_ssh "$SSH_PORT" "localhost" "ubuntu" "cloud-init status --wait" || true
 
     save_state "qemu-tcg" "localhost" "$SSH_PORT" "ubuntu"
     log_success "QEMU VM created"
@@ -229,7 +277,10 @@ SSH_USER=ubuntu
 SSH_PORT=$ssh_port
 SSH_PASS=$ssh_pass
 API_PORT=$API_PORT
+REGISTRY_PORT=$REGISTRY_PORT
 QEMU_DIR=$QEMU_DIR
+VM_MEMORY=$VM_MEMORY
+VM_CPUS=$VM_CPUS
 EOF
 }
 
@@ -253,12 +304,12 @@ print_info() {
         echo "  multipass stop $VM_NAME"
         echo "  multipass delete $VM_NAME --purge"
     else
-        echo "SSH:  sshpass -p 'ubuntu' ssh -p $SSH_PORT ubuntu@localhost"
+        echo "SSH:  ssh -i $SSH_KEY -p $SSH_PORT ubuntu@localhost"
         echo "API:  http://localhost:$API_PORT"
         echo
         echo "Management:"
-        echo "  kill \$(cat $QEMU_DIR/$VM_NAME.pid)  # stop"
-        echo "  $SCRIPT_DIR/vm-start.sh              # start"
+        echo "  make vm-stop   # stop VM"
+        echo "  make vm-start  # start VM"
     fi
 
     echo
@@ -268,23 +319,75 @@ print_info() {
     echo "============================================"
 }
 
+# Check what hypervisors are available
+check_available_hypervisors() {
+    local available=""
+    if detect_kvm && command -v multipass &>/dev/null; then
+        available="multipass"
+    fi
+    if command -v qemu-system-x86_64 &>/dev/null; then
+        [ -n "$available" ] && available="$available qemu" || available="qemu"
+    fi
+    echo "$available"
+}
+
 # Main
 main() {
     echo
     echo "=== AV Scanner VM Init ==="
     echo
 
-    local hypervisor=$(detect_hypervisor)
+    local available=$(check_available_hypervisors)
+    local hypervisor=""
+
+    # Handle forced hypervisor selection
+    if [ -n "$FORCE_HYPERVISOR" ]; then
+        case $FORCE_HYPERVISOR in
+            multipass)
+                if ! detect_kvm || ! command -v multipass &>/dev/null; then
+                    log_error "Multipass not available (requires KVM and multipass installed)"
+                    exit 1
+                fi
+                hypervisor="multipass"
+                ;;
+            qemu|qemu-tcg)
+                if ! command -v qemu-system-x86_64 &>/dev/null; then
+                    log_error "QEMU not installed. Install with: sudo apt install qemu-system-x86 qemu-utils cloud-image-utils"
+                    exit 1
+                fi
+                hypervisor="qemu-tcg"
+                ;;
+            *)
+                log_error "Unknown hypervisor: $FORCE_HYPERVISOR (use 'multipass' or 'qemu')"
+                exit 1
+                ;;
+        esac
+    elif [ -z "$available" ]; then
+        log_error "No hypervisor found. Install one of:"
+        echo "  - Multipass: sudo snap install multipass"
+        echo "  - QEMU: sudo apt install qemu-system-x86 qemu-utils cloud-image-utils"
+        exit 1
+    elif [[ "$available" == "multipass qemu" ]]; then
+        # Both available - let user choose
+        echo "Available hypervisors:"
+        echo "  1) Multipass (KVM) - faster, recommended"
+        echo "  2) QEMU (TCG)      - slower, works without KVM"
+        echo
+        read -p "Select hypervisor [1/2]: " -n 1 -r
+        echo
+        case $REPLY in
+            2) hypervisor="qemu-tcg" ;;
+            *) hypervisor="multipass" ;;
+        esac
+    elif [[ "$available" == *"multipass"* ]]; then
+        hypervisor="multipass"
+    else
+        hypervisor="qemu-tcg"
+    fi
 
     case $hypervisor in
         multipass)  log_success "Using Multipass (KVM)" ;;
-        qemu-tcg)   log_warn "Using QEMU TCG (no KVM - slower)" ;;
-        none)
-            log_error "No hypervisor found. Install one of:"
-            echo "  - Multipass: sudo snap install multipass"
-            echo "  - QEMU: sudo apt install qemu-system-x86 qemu-utils cloud-image-utils"
-            exit 1
-            ;;
+        qemu-tcg)   log_warn "Using QEMU TCG (software emulation - slower)" ;;
     esac
 
     echo
@@ -297,7 +400,7 @@ main() {
 
     # Check/install prerequisites for QEMU
     if [ "$hypervisor" = "qemu-tcg" ]; then
-        if ! command -v cloud-localds &>/dev/null || ! command -v sshpass &>/dev/null; then
+        if ! command -v cloud-localds &>/dev/null; then
             read -p "Install QEMU prerequisites? [Y/n] " -n 1 -r
             echo
             [[ ! $REPLY =~ ^[Nn]$ ]] && install_qemu_prerequisites

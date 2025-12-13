@@ -11,16 +11,15 @@ all:
       # For QEMU VM:
       #   export AV_SCANNER_IP=localhost
       #   export AV_SCANNER_PORT=2222
-      #   export AV_SCANNER_PASS=ubuntu
+      #   export AV_SCANNER_KEY=../.ssh/id_ed25519
       #   ansible-playbook -i inventory.yaml deploy.yaml
 
       ansible_host: "{{ lookup('env', 'AV_SCANNER_IP') | default('192.168.64.2', true) }}"
       ansible_user: ubuntu
       ansible_port: "{{ lookup('env', 'AV_SCANNER_PORT') | default(22, true) }}"
 
-      # SSH authentication - uses key by default, falls back to password for QEMU
-      ansible_ssh_private_key_file: "{{ lookup('env', 'HOME') }}/.ssh/id_rsa"
-      ansible_password: "{{ lookup('env', 'AV_SCANNER_PASS') | default(omit, true) }}"
+      # SSH authentication - uses project key for QEMU, home key for Multipass
+      ansible_ssh_private_key_file: "{{ lookup('env', 'AV_SCANNER_KEY') | default(lookup('env', 'HOME') + '/.ssh/id_rsa', true) }}"
 
       # SSH options for both hypervisors
       ansible_ssh_common_args: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"

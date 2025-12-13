@@ -46,6 +46,53 @@
         cache_valid_time: 3600
 
     # ============================================
+    # Docker Registry Setup
+    # ============================================
+    - name: Install Podman
+      apt:
+        name:
+          - podman
+        state: present
+
+    - name: Create registry systemd service
+      copy:
+        content: |
+          [Unit]
+          Description=Container Registry
+          After=network.target
+
+          [Service]
+          Type=simple
+          Restart=always
+          RestartSec=5
+          ExecStartPre=-/usr/bin/podman rm -f registry
+          ExecStart=/usr/bin/podman run --rm --name registry -p 5000:5000 -v registry-data:/var/lib/registry docker.io/library/registry:2
+          ExecStop=/usr/bin/podman stop registry
+
+          [Install]
+          WantedBy=multi-user.target
+        dest: /etc/systemd/system/registry.service
+        mode: "0644"
+      notify: Restart registry
+
+    - name: Enable and start registry service
+      systemd:
+        name: registry
+        state: started
+        enabled: true
+        daemon_reload: true
+
+    - name: Wait for registry to be ready
+      uri:
+        url: "http://localhost:5000/v2/"
+        method: GET
+        status_code: [200, 401]
+      register: registry_check
+      until: registry_check.status in [200, 401]
+      retries: 30
+      delay: 2
+
+    # ============================================
     # ClamAV Installation
     # ============================================
     - name: Install ClamAV and dependencies
@@ -225,6 +272,12 @@
         msg: "{{ clamav_status.stdout_lines }}"
 
   handlers:
+    - name: Restart registry
+      systemd:
+        name: registry
+        state: restarted
+        daemon_reload: true
+
     - name: Restart ClamAV daemon
       systemd:
         name: clamav-daemon
