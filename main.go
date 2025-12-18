@@ -64,7 +64,11 @@ func main() {
 	}
 
 	// Initialize API
-	apiHandler := api.New(s, cfg, logger)
+	apiHandler, err := api.New(s, cfg, logger)
+	if err != nil {
+		logger.Error("Failed to initialize API", "error", err)
+		os.Exit(1)
+	}
 
 	// Create HTTP server
 	server := &http.Server{
@@ -104,6 +108,9 @@ func main() {
 
 	// Stop scanner background watchers
 	s.Stop()
+
+	// Close API resources
+	apiHandler.Close()
 
 	logger.Info("Server exited")
 }

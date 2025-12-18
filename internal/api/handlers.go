@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/rophy/av-scanner/internal/auth"
 	"github.com/rophy/av-scanner/internal/config"
 	"github.com/rophy/av-scanner/internal/metrics"
 	"github.com/rophy/av-scanner/internal/scanner"
@@ -16,17 +17,56 @@ import (
 )
 
 type API struct {
-	scanner *scanner.Scanner
-	config  *config.Config
-	logger  *slog.Logger
+	scanner        *scanner.Scanner
+	config         *config.Config
+	logger         *slog.Logger
+	authMiddleware *auth.Middleware
+	allowlist      *auth.Allowlist
 }
 
-func New(s *scanner.Scanner, cfg *config.Config, logger *slog.Logger) *API {
-	return &API{
+func New(s *scanner.Scanner, cfg *config.Config, logger *slog.Logger) (*API, error) {
+	api := &API{
 		scanner: s,
 		config:  cfg,
 		logger:  logger,
 	}
+
+	// Initialize auth middleware if enabled
+	if cfg.Auth.Enabled {
+		// Create auth client
+		authClient := auth.NewClient(
+			cfg.Auth.ServiceURL,
+			cfg.Auth.ClusterName,
+			time.Duration(cfg.Auth.Timeout)*time.Millisecond,
+			logger,
+		)
+
+		// Load allowlist
+		allowlist, err := auth.NewAllowlist(cfg.Auth.AllowlistFile, logger)
+		if err != nil {
+			return nil, err
+		}
+
+		// Start watching for allowlist changes
+		if err := allowlist.Watch(); err != nil {
+			return nil, err
+		}
+
+		api.allowlist = allowlist
+		api.authMiddleware = auth.NewMiddleware(authClient, allowlist, logger, []string{
+			"/api/v1/live",
+			"/api/v1/ready",
+			"/metrics",
+		})
+
+		logger.Info("Authentication enabled",
+			"serviceURL", cfg.Auth.ServiceURL,
+			"cluster", cfg.Auth.ClusterName,
+			"allowlistFile", cfg.Auth.AllowlistFile,
+		)
+	}
+
+	return api, nil
 }
 
 func (a *API) Routes() http.Handler {
@@ -43,7 +83,29 @@ func (a *API) Routes() http.Handler {
 	// Prometheus metrics endpoint
 	mux.Handle("GET /metrics", metrics.Handler())
 
-	return metrics.Middleware(a.withLogging(mux))
+	// Build middleware chain
+	var handler http.Handler = mux
+
+	// Apply auth middleware if enabled (innermost - runs first)
+	if a.authMiddleware != nil {
+		handler = a.authMiddleware.Handler(handler)
+	}
+
+	// Apply logging middleware
+	handler = a.withLogging(handler)
+
+	// Apply metrics middleware (outermost - runs last)
+	handler = metrics.Middleware(handler)
+
+	return handler
+}
+
+// Close cleans up API resources
+func (a *API) Close() error {
+	if a.allowlist != nil {
+		return a.allowlist.Close()
+	}
+	return nil
 }
 
 func (a *API) handleScan(w http.ResponseWriter, r *http.Request) {

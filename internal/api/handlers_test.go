@@ -34,11 +34,17 @@ func newTestAPI(t *testing.T) (*API, string) {
 			config.EngineClamAV:     {Engine: config.EngineClamAV},
 			config.EngineTrendMicro: {Engine: config.EngineTrendMicro},
 		},
+		Auth: config.AuthConfig{
+			Enabled: false, // Auth disabled in tests by default
+		},
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	s := scanner.New(cfg, logger)
-	api := New(s, cfg, logger)
+	api, err := New(s, cfg, logger)
+	if err != nil {
+		t.Fatalf("failed to create API: %v", err)
+	}
 
 	return api, tmpDir
 }

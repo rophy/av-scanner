@@ -346,3 +346,162 @@ func TestEngineTypeConstants(t *testing.T) {
 		t.Errorf("expected EngineMock to be 'mock', got %s", EngineMock)
 	}
 }
+
+func TestLoad_AuthConfigDefaults(t *testing.T) {
+	// Clear auth env vars
+	envVars := []string{"AUTH_ENABLED", "AUTH_SERVICE_URL", "AUTH_CLUSTER_NAME", "AUTH_TIMEOUT", "AUTH_ALLOWLIST_FILE"}
+	for _, v := range envVars {
+		os.Unsetenv(v)
+	}
+	os.Unsetenv("AV_ENGINE")
+	os.Unsetenv("PORT")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if cfg.Auth.Enabled {
+		t.Error("expected Auth.Enabled to be false by default")
+	}
+	if cfg.Auth.ServiceURL != "" {
+		t.Errorf("expected Auth.ServiceURL to be empty, got %s", cfg.Auth.ServiceURL)
+	}
+	if cfg.Auth.ClusterName != "default" {
+		t.Errorf("expected Auth.ClusterName to be 'default', got %s", cfg.Auth.ClusterName)
+	}
+	if cfg.Auth.Timeout != 5000 {
+		t.Errorf("expected Auth.Timeout to be 5000, got %d", cfg.Auth.Timeout)
+	}
+	if cfg.Auth.AllowlistFile != "/etc/av-scanner/allowlist.yaml" {
+		t.Errorf("expected Auth.AllowlistFile to be '/etc/av-scanner/allowlist.yaml', got %s", cfg.Auth.AllowlistFile)
+	}
+}
+
+func TestLoad_AuthConfigEnabled(t *testing.T) {
+	os.Setenv("AUTH_ENABLED", "true")
+	os.Setenv("AUTH_SERVICE_URL", "http://auth-service:8080")
+	os.Setenv("AUTH_CLUSTER_NAME", "prod-cluster")
+	os.Setenv("AUTH_TIMEOUT", "10000")
+	os.Setenv("AUTH_ALLOWLIST_FILE", "/custom/allowlist.yaml")
+	os.Unsetenv("AV_ENGINE")
+	os.Unsetenv("PORT")
+
+	defer func() {
+		os.Unsetenv("AUTH_ENABLED")
+		os.Unsetenv("AUTH_SERVICE_URL")
+		os.Unsetenv("AUTH_CLUSTER_NAME")
+		os.Unsetenv("AUTH_TIMEOUT")
+		os.Unsetenv("AUTH_ALLOWLIST_FILE")
+	}()
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !cfg.Auth.Enabled {
+		t.Error("expected Auth.Enabled to be true")
+	}
+	if cfg.Auth.ServiceURL != "http://auth-service:8080" {
+		t.Errorf("expected Auth.ServiceURL 'http://auth-service:8080', got %s", cfg.Auth.ServiceURL)
+	}
+	if cfg.Auth.ClusterName != "prod-cluster" {
+		t.Errorf("expected Auth.ClusterName 'prod-cluster', got %s", cfg.Auth.ClusterName)
+	}
+	if cfg.Auth.Timeout != 10000 {
+		t.Errorf("expected Auth.Timeout 10000, got %d", cfg.Auth.Timeout)
+	}
+	if cfg.Auth.AllowlistFile != "/custom/allowlist.yaml" {
+		t.Errorf("expected Auth.AllowlistFile '/custom/allowlist.yaml', got %s", cfg.Auth.AllowlistFile)
+	}
+}
+
+func TestValidate_AuthEnabled_MissingServiceURL(t *testing.T) {
+	cfg := Config{
+		Port:         3000,
+		ActiveEngine: EngineClamAV,
+		MaxFileSize:  100,
+		Auth: AuthConfig{
+			Enabled:    true,
+			ServiceURL: "",
+			Timeout:    5000,
+		},
+	}
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for missing SERVICE_URL when auth enabled")
+	}
+	if err.Error() != "AUTH_SERVICE_URL is required when AUTH_ENABLED=true" {
+		t.Errorf("unexpected error message: %s", err.Error())
+	}
+}
+
+func TestValidate_AuthEnabled_InvalidTimeout(t *testing.T) {
+	cfg := Config{
+		Port:         3000,
+		ActiveEngine: EngineClamAV,
+		MaxFileSize:  100,
+		Auth: AuthConfig{
+			Enabled:    true,
+			ServiceURL: "http://localhost:8080",
+			Timeout:    0,
+		},
+	}
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for invalid auth timeout")
+	}
+}
+
+func TestValidate_AuthDisabled_NoValidation(t *testing.T) {
+	cfg := Config{
+		Port:         3000,
+		ActiveEngine: EngineClamAV,
+		MaxFileSize:  100,
+		Auth: AuthConfig{
+			Enabled:    false,
+			ServiceURL: "", // Empty is OK when disabled
+			Timeout:    0,  // Zero is OK when disabled
+		},
+	}
+
+	err := cfg.Validate()
+	if err != nil {
+		t.Errorf("unexpected error when auth disabled: %v", err)
+	}
+}
+
+func TestGetEnvBool(t *testing.T) {
+	tests := []struct {
+		value    string
+		expected bool
+	}{
+		{"true", true},
+		{"1", true},
+		{"yes", true},
+		{"false", false},
+		{"0", false},
+		{"no", false},
+		{"invalid", false},
+	}
+
+	for _, tt := range tests {
+		os.Setenv("TEST_BOOL", tt.value)
+		result := getEnvBool("TEST_BOOL", false)
+		if result != tt.expected {
+			t.Errorf("getEnvBool(%q) = %v, expected %v", tt.value, result, tt.expected)
+		}
+		os.Unsetenv("TEST_BOOL")
+	}
+
+	// Test default value
+	if getEnvBool("NONEXISTENT_BOOL", true) != true {
+		t.Error("expected default value true")
+	}
+	if getEnvBool("NONEXISTENT_BOOL", false) != false {
+		t.Error("expected default value false")
+	}
+}

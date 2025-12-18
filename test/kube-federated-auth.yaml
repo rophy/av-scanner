@@ -1,0 +1,108 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kube-federated-auth
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kube-federated-auth-config
+  namespace: kube-federated-auth
+data:
+  clusters.yaml: |
+    renewal:
+      interval: "1h"
+      token_duration: "168h"
+      renew_before: "48h"
+    clusters:
+      minikube:
+        issuer: "https://kubernetes.default.svc.cluster.local"
+        api_server: "https://kubernetes.default.svc.cluster.local"
+        ca_cert: "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+        token_path: "/var/run/secrets/kubernetes.io/serviceaccount/token"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kube-federated-auth
+  namespace: kube-federated-auth
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kube-federated-auth
+rules:
+- apiGroups: ["authentication.k8s.io"]
+  resources: ["tokenreviews"]
+  verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kube-federated-auth
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kube-federated-auth
+subjects:
+- kind: ServiceAccount
+  name: kube-federated-auth
+  namespace: kube-federated-auth
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kube-federated-auth
+  namespace: kube-federated-auth
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kube-federated-auth
+  template:
+    metadata:
+      labels:
+        app: kube-federated-auth
+    spec:
+      serviceAccountName: kube-federated-auth
+      containers:
+      - name: kube-federated-auth
+        image: rophy/kube-federated-auth:0.0.1
+        ports:
+        - containerPort: 8080
+        env:
+        - name: CONFIG_PATH
+          value: /etc/kube-federated-auth/clusters.yaml
+        - name: PORT
+          value: "8080"
+        volumeMounts:
+        - name: config
+          mountPath: /etc/kube-federated-auth
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+      volumes:
+      - name: config
+        configMap:
+          name: kube-federated-auth-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kube-federated-auth
+  namespace: kube-federated-auth
+spec:
+  selector:
+    app: kube-federated-auth
+  ports:
+  - port: 8080
+    targetPort: 8080

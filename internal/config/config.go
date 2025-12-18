@@ -23,6 +23,14 @@ type DriverConfig struct {
 	RTSCacheDelayPerMB int // milliseconds - additional delay per MB of file size
 }
 
+type AuthConfig struct {
+	Enabled       bool
+	ServiceURL    string // kube-federated-auth service URL
+	ClusterName   string // cluster name for token validation
+	Timeout       int    // milliseconds
+	AllowlistFile string // path to allowlist YAML file
+}
+
 type Config struct {
 	Port         int
 	UploadDir    string
@@ -30,6 +38,7 @@ type Config struct {
 	ActiveEngine EngineType
 	LogLevel     string
 	Drivers      map[EngineType]DriverConfig
+	Auth         AuthConfig
 }
 
 func Load() (*Config, error) {
@@ -59,6 +68,13 @@ func Load() (*Config, error) {
 				RTSCacheDelayPerMB: getEnvInt("TM_RTS_CACHE_DELAY_PER_MB", 10),
 			},
 		},
+		Auth: AuthConfig{
+			Enabled:       getEnvBool("AUTH_ENABLED", false),
+			ServiceURL:    getEnv("AUTH_SERVICE_URL", ""),
+			ClusterName:   getEnv("AUTH_CLUSTER_NAME", "default"),
+			Timeout:       getEnvInt("AUTH_TIMEOUT", 5000),
+			AllowlistFile: getEnv("AUTH_ALLOWLIST_FILE", "/etc/av-scanner/allowlist.yaml"),
+		},
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -77,6 +93,14 @@ func (c *Config) Validate() error {
 	}
 	if c.MaxFileSize < 1 {
 		return fmt.Errorf("invalid max file size: %d", c.MaxFileSize)
+	}
+	if c.Auth.Enabled {
+		if c.Auth.ServiceURL == "" {
+			return fmt.Errorf("AUTH_SERVICE_URL is required when AUTH_ENABLED=true")
+		}
+		if c.Auth.Timeout < 1 {
+			return fmt.Errorf("invalid auth timeout: %d", c.Auth.Timeout)
+		}
 	}
 	return nil
 }
@@ -102,6 +126,13 @@ func getEnvInt64(key string, defaultValue int64) int64 {
 		if i, err := strconv.ParseInt(value, 10, 64); err == nil {
 			return i
 		}
+	}
+	return defaultValue
+}
+
+func getEnvBool(key string, defaultValue bool) bool {
+	if value := os.Getenv(key); value != "" {
+		return value == "true" || value == "1" || value == "yes"
 	}
 	return defaultValue
 }
