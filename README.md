@@ -187,6 +187,101 @@ multipass purge
 | `TM_RTS_CACHE_BASE_DELAY` | 500 | Base delay (ms) when waiting for RTS cache |
 | `TM_RTS_CACHE_DELAY_PER_MB` | 10 | Additional delay (ms) per MB of file size |
 
+### Authentication Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AUTH_ENABLED` | false | Enable K8s ServiceAccount authentication |
+| `AUTH_SERVICE_URL` | (required if enabled) | URL of kube-federated-auth service |
+| `AUTH_CLUSTER_NAME` | default | Cluster name for token validation |
+| `AUTH_TIMEOUT` | 5000 | Auth service timeout in ms |
+| `AUTH_ALLOWLIST_FILE` | /etc/av-scanner/allowlist.yaml | Path to ServiceAccount allowlist |
+
+## Authentication
+
+When deployed in Kubernetes, av-scanner supports authentication using Kubernetes ServiceAccount tokens via [kube-federated-auth](https://github.com/rophy/kube-federated-auth).
+
+### How it works
+
+1. Client sends request with `Authorization: Bearer <k8s-sa-token>` header
+2. av-scanner validates token via kube-federated-auth `/validate` endpoint
+3. av-scanner checks if the ServiceAccount is in the allowlist
+4. Request proceeds if authorized, otherwise returns 401/403
+
+### Enable authentication
+
+```bash
+export AUTH_ENABLED=true
+export AUTH_SERVICE_URL=http://kube-federated-auth:8080
+export AUTH_CLUSTER_NAME=my-cluster
+export AUTH_ALLOWLIST_FILE=/etc/av-scanner/allowlist.yaml
+```
+
+### Allowlist file format
+
+```yaml
+# /etc/av-scanner/allowlist.yaml
+allowlist:
+  - my-cluster/namespace1/serviceaccount1
+  - my-cluster/namespace2/serviceaccount2
+  - other-cluster/ci-cd/pipeline-runner
+```
+
+Format: `{cluster}/{namespace}/{serviceAccount}`
+
+The file is watched for changes and reloaded automatically (hot-reload).
+
+### Endpoints that skip authentication
+
+- `GET /api/v1/live` - Kubernetes liveness probe
+- `GET /api/v1/ready` - Kubernetes readiness probe
+- `GET /metrics` - Prometheus metrics
+
+### Error responses
+
+| Status | Scenario |
+|--------|----------|
+| 401 | Missing or invalid Authorization header |
+| 401 | Token validation failed (expired, invalid signature) |
+| 403 | ServiceAccount not in allowlist |
+
+### Kubernetes deployment example
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: av-scanner-allowlist
+data:
+  allowlist.yaml: |
+    allowlist:
+      - my-cluster/app-namespace/app-sa
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: av-scanner
+spec:
+  template:
+    spec:
+      containers:
+      - name: av-scanner
+        env:
+        - name: AUTH_ENABLED
+          value: "true"
+        - name: AUTH_SERVICE_URL
+          value: "http://kube-federated-auth.kube-federated-auth:8080"
+        - name: AUTH_CLUSTER_NAME
+          value: "my-cluster"
+        volumeMounts:
+        - name: allowlist
+          mountPath: /etc/av-scanner
+      volumes:
+      - name: allowlist
+        configMap:
+          name: av-scanner-allowlist
+```
+
 To change configuration, edit the systemd service file on the VM:
 
 ```bash
