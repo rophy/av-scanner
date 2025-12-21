@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"time"
@@ -16,13 +17,28 @@ type ValidateRequest struct {
 	Cluster string `json:"cluster"`
 }
 
-// ValidateResponse is the response from kube-federated-auth /validate endpoint
+// ValidateResponse is the success response from kube-federated-auth /validate endpoint
+// On HTTP 200, it returns decoded JWT claims with Kubernetes metadata
 type ValidateResponse struct {
-	Valid          bool   `json:"valid"`
-	Namespace      string `json:"namespace"`
-	ServiceAccount string `json:"serviceAccount"`
-	UID            string `json:"uid,omitempty"`
-	Error          string `json:"error,omitempty"`
+	KubernetesIO *KubernetesMetadata `json:"kubernetes.io,omitempty"`
+}
+
+// KubernetesMetadata contains the Kubernetes-specific claims from the token
+type KubernetesMetadata struct {
+	Namespace      string                `json:"namespace"`
+	ServiceAccount *ServiceAccountInfo   `json:"serviceaccount,omitempty"`
+}
+
+// ServiceAccountInfo contains service account details from the token
+type ServiceAccountInfo struct {
+	Name string `json:"name"`
+	UID  string `json:"uid"`
+}
+
+// ErrorResponse is the error response from kube-federated-auth /validate endpoint
+type ErrorResponse struct {
+	Error   string `json:"error"`
+	Message string `json:"message"`
 }
 
 // CallerIdentity represents the authenticated caller information
@@ -79,24 +95,37 @@ func (c *Client) Validate(ctx context.Context, token string) (*CallerIdentity, e
 
 	switch resp.StatusCode {
 	case http.StatusOK:
+		// HTTP 200 means token is valid, response contains decoded JWT claims
 		var validateResp ValidateResponse
 		if err := json.NewDecoder(resp.Body).Decode(&validateResp); err != nil {
 			return nil, fmt.Errorf("failed to decode response: %w", err)
 		}
-		if !validateResp.Valid {
-			return nil, fmt.Errorf("token validation failed: %s", validateResp.Error)
+		if validateResp.KubernetesIO == nil || validateResp.KubernetesIO.ServiceAccount == nil {
+			return nil, fmt.Errorf("invalid response: missing kubernetes.io metadata")
 		}
-		return &CallerIdentity{
-			Namespace:      validateResp.Namespace,
-			ServiceAccount: validateResp.ServiceAccount,
-			UID:            validateResp.UID,
+		identity := &CallerIdentity{
+			Namespace:      validateResp.KubernetesIO.Namespace,
+			ServiceAccount: validateResp.KubernetesIO.ServiceAccount.Name,
+			UID:            validateResp.KubernetesIO.ServiceAccount.UID,
 			Cluster:        c.cluster,
-		}, nil
-	case http.StatusUnauthorized:
-		return nil, fmt.Errorf("invalid token")
-	case http.StatusBadRequest:
-		return nil, fmt.Errorf("unknown cluster: %s", c.cluster)
+		}
+		c.logger.Info("authentication successful",
+			"identity", fmt.Sprintf("%s/%s/%s", identity.Cluster, identity.Namespace, identity.ServiceAccount),
+		)
+		return identity, nil
+	case http.StatusUnauthorized, http.StatusBadRequest:
+		// Error responses contain error code and message
+		var errResp ErrorResponse
+		if err := json.NewDecoder(resp.Body).Decode(&errResp); err != nil {
+			return nil, fmt.Errorf("auth failed: status %d", resp.StatusCode)
+		}
+		return nil, fmt.Errorf("%s: %s", errResp.Error, errResp.Message)
 	default:
+		body, _ := io.ReadAll(resp.Body)
+		c.logger.Error("auth service error",
+			"status", resp.StatusCode,
+			"body", string(body),
+		)
 		return nil, fmt.Errorf("auth service error: status %d", resp.StatusCode)
 	}
 }

@@ -129,9 +129,13 @@ func TestMiddleware_ValidTokenAndInAllowlist(t *testing.T) {
 	middleware, _, cleanup := setupTestMiddleware(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(ValidateResponse{
-			Valid:          true,
-			Namespace:      "test-ns",
-			ServiceAccount: "test-sa",
+			KubernetesIO: &KubernetesMetadata{
+				Namespace: "test-ns",
+				ServiceAccount: &ServiceAccountInfo{
+					Name: "test-sa",
+					UID:  "test-uid",
+				},
+			},
 		})
 	})
 	defer cleanup()
@@ -174,9 +178,13 @@ func TestMiddleware_ValidTokenButNotInAllowlist(t *testing.T) {
 	middleware, _, cleanup := setupTestMiddleware(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(ValidateResponse{
-			Valid:          true,
-			Namespace:      "unauthorized-ns",
-			ServiceAccount: "unauthorized-sa",
+			KubernetesIO: &KubernetesMetadata{
+				Namespace: "unauthorized-ns",
+				ServiceAccount: &ServiceAccountInfo{
+					Name: "unauthorized-sa",
+					UID:  "test-uid",
+				},
+			},
 		})
 	})
 	defer cleanup()

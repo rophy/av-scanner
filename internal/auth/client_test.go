@@ -37,11 +37,15 @@ func TestClient_Validate_Success(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
+		// Response matches actual kube-federated-auth format
 		json.NewEncoder(w).Encode(ValidateResponse{
-			Valid:          true,
-			Namespace:      "test-ns",
-			ServiceAccount: "test-sa",
-			UID:            "test-uid",
+			KubernetesIO: &KubernetesMetadata{
+				Namespace: "test-ns",
+				ServiceAccount: &ServiceAccountInfo{
+					Name: "test-sa",
+					UID:  "test-uid",
+				},
+			},
 		})
 	}))
 	defer server.Close()
@@ -68,7 +72,12 @@ func TestClient_Validate_Success(t *testing.T) {
 
 func TestClient_Validate_InvalidToken(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(ErrorResponse{
+			Error:   "invalid_signature",
+			Message: "Token signature verification failed",
+		})
 	}))
 	defer server.Close()
 
@@ -78,14 +87,19 @@ func TestClient_Validate_InvalidToken(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if err.Error() != "invalid token" {
-		t.Errorf("expected 'invalid token' error, got '%s'", err.Error())
+	if err.Error() != "invalid_signature: Token signature verification failed" {
+		t.Errorf("expected 'invalid_signature' error, got '%s'", err.Error())
 	}
 }
 
 func TestClient_Validate_UnknownCluster(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(ErrorResponse{
+			Error:   "cluster_not_found",
+			Message: "Unknown cluster: unknown-cluster",
+		})
 	}))
 	defer server.Close()
 
@@ -95,8 +109,8 @@ func TestClient_Validate_UnknownCluster(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if err.Error() != "unknown cluster: unknown-cluster" {
-		t.Errorf("expected 'unknown cluster' error, got '%s'", err.Error())
+	if err.Error() != "cluster_not_found: Unknown cluster: unknown-cluster" {
+		t.Errorf("expected 'cluster_not_found' error, got '%s'", err.Error())
 	}
 }
 
@@ -117,12 +131,13 @@ func TestClient_Validate_ServerError(t *testing.T) {
 	}
 }
 
-func TestClient_Validate_ValidationFailed(t *testing.T) {
+func TestClient_Validate_TokenExpired(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(ValidateResponse{
-			Valid: false,
-			Error: "token expired",
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(ErrorResponse{
+			Error:   "token_expired",
+			Message: "Token has expired",
 		})
 	}))
 	defer server.Close()
@@ -133,8 +148,8 @@ func TestClient_Validate_ValidationFailed(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if err.Error() != "token validation failed: token expired" {
-		t.Errorf("expected 'token validation failed' error, got '%s'", err.Error())
+	if err.Error() != "token_expired: Token has expired" {
+		t.Errorf("expected 'token_expired' error, got '%s'", err.Error())
 	}
 }
 
